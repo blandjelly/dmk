@@ -3,6 +3,7 @@
 
 void rt_cfg_defaults(rt_cfg_t *c) {
     c->rt_enabled = false;
+    c->bottom_dz  = 0;    /* release tracks up to the full travel */
     c->act_pm     = 750;  /* 75 % of range                   */
     c->press_pm   = 30;   /* 3 %                             */
     c->release_pm = 30;   /* 3 %                             */
@@ -48,6 +49,8 @@ __attribute__((section(".RamFunc"), optimize("O2")))
 #endif
 bool rt_update_curve(rt_key_t *k, const rt_cfg_t *c, uint16_t raw, const uint16_t *lut) {
     int16_t v = (int16_t)normalize(k, raw, lut);
+    /* A per-key actuation point overrides the shared one; the caller keeps it above reset_pm. */
+    uint16_t act = k->act_pm ? k->act_pm : c->act_pm;
 
     /* Top dead zone: key is definitely up, RT disarmed until act_pm is crossed again. */
     if (v <= (int16_t)c->reset_pm) {
@@ -59,7 +62,7 @@ bool rt_update_curve(rt_key_t *k, const rt_cfg_t *c, uint16_t raw, const uint16_
 
     /* Classic mode: fixed actuation point with release hysteresis. */
     if (!c->rt_enabled) {
-        int16_t rel = (c->act_pm > c->release_pm) ? (int16_t)(c->act_pm - c->release_pm) : (int16_t)c->reset_pm;
+        int16_t rel = (act > c->release_pm) ? (int16_t)(act - c->release_pm) : (int16_t)c->reset_pm;
         if (rel < (int16_t)c->reset_pm) {
             rel = (int16_t)c->reset_pm;
         }
@@ -67,7 +70,7 @@ bool rt_update_curve(rt_key_t *k, const rt_cfg_t *c, uint16_t raw, const uint16_
             if (v <= rel) {
                 k->down = false;
             }
-        } else if (v >= (int16_t)c->act_pm) {
+        } else if (v >= (int16_t)act) {
             k->down = true;
         }
         k->latched = k->down;
@@ -75,12 +78,16 @@ bool rt_update_curve(rt_key_t *k, const rt_cfg_t *c, uint16_t raw, const uint16_
         return k->down;
     }
 
+    /* Deepest point release is measured from. Past it the signal follows finger pressure,
+     * not travel, and over-travel beyond the calibrated peak is pressure as well. */
+    int16_t bottom = (int16_t)((lut ? lut[125] : RT_FULL_SCALE) - c->bottom_dz * RT_DZ_STEP_PM);
+
     /* Rapid Trigger, not armed yet: needs the normal actuation point once. */
     if (!k->latched) {
-        if (v >= (int16_t)c->act_pm) {
+        if (v >= (int16_t)act) {
             k->latched = true;
             k->down    = true;
-            k->ext     = v;
+            k->ext     = v > bottom ? bottom : v;
             return true;
         }
         k->down = false;
@@ -91,7 +98,7 @@ bool rt_update_curve(rt_key_t *k, const rt_cfg_t *c, uint16_t raw, const uint16_
     /* Armed: follow the direction of motion. */
     if (k->down) {
         if (v > k->ext) {
-            k->ext = v;                                   /* deepest point so far  */
+            k->ext = v > bottom ? bottom : v;             /* deepest point so far  */
         } else if ((int16_t)(k->ext - v) >= (int16_t)c->release_pm) {
             k->down = false;                              /* moved up enough       */
             k->ext  = v;
@@ -101,7 +108,7 @@ bool rt_update_curve(rt_key_t *k, const rt_cfg_t *c, uint16_t raw, const uint16_
             k->ext = v;                                   /* highest point so far  */
         } else if ((int16_t)(v - k->ext) >= (int16_t)c->press_pm) {
             k->down = true;                               /* moved down enough     */
-            k->ext  = v;
+            k->ext  = v > bottom ? bottom : v;
         }
     }
     return k->down;

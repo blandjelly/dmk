@@ -134,6 +134,43 @@ __attribute__((noinline)) static void scan_adc_prepare(void) {
     }
 }
 
+static void clamp_cfg_to_travel(rt_cfg_t *cfg, uint16_t max_travel) {
+    if (cfg->act_pm > max_travel) cfg->act_pm = max_travel;
+    if (cfg->press_pm > max_travel) cfg->press_pm = max_travel;
+    if (cfg->release_pm > max_travel) cfg->release_pm = max_travel;
+}
+
+// Runs from flash: only the per-key loop needs the scarce RAM-resident code.
+__attribute__((noinline)) static void scan_cfg_prepare(rt_cfg_t cfgs[HHKB_RT_PROFILES + 1],
+                                                       uint8_t rt_lo[MATRIX_COLS], uint8_t rt_hi[MATRIX_COLS],
+                                                       const uint16_t *curve) {
+    static uint32_t curve_revision;
+    static uint32_t key_cfg_revision;
+    hhkb_get_scan_cfgs(cfgs, rt_lo, rt_hi);
+    bool curve_changed = curve_revision != ec_curve_revision;
+    if (curve_changed) {
+        curve_revision = ec_curve_revision;
+        for (uint8_t col = 0; col < MATRIX_COLS; ++col)
+            for (uint8_t row = 0; row < MATRIX_ROWS; ++row)
+                rt_key_reset(hhkb_get_rt_key(col, row));
+    }
+    uint16_t max_travel = curve ? curve[125] : 1000;
+    for (unsigned p = 0; p <= HHKB_RT_PROFILES; p++)
+        clamp_cfg_to_travel(&cfgs[p], max_travel);
+
+    // Per-key actuation points change rarely; refresh them only after an edit or a new curve.
+    uint32_t revision = hhkb_key_cfg_revision();
+    if (curve_changed || revision != key_cfg_revision) {
+        key_cfg_revision = revision;
+        for (uint8_t col = 0; col < MATRIX_COLS; ++col) {
+            for (uint8_t row = 0; row < MATRIX_ROWS; ++row) {
+                uint16_t act = hhkb_get_key_act_pm(col, row);
+                hhkb_get_rt_key(col, row)->act_pm = act > max_travel ? max_travel : act;
+            }
+        }
+    }
+}
+
 __attribute__((noinline)) static void scan_adc_idle(void) {
 #ifdef HHKB_HYBRID
     if (hhkb_hybrid_on_battery()) {
@@ -173,23 +210,17 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
     bool capture = hhkb_cal_is_capturing_baseline();
     bool capture_failed = false;
     bool is_calibrating = hhkb_is_calibrating();
-    rt_cfg_t scan_cfg = hhkb_get_scan_cfg();
     const uint16_t *curve = ec_curve_lut;
-    static uint32_t curve_revision;
-    if (curve_revision != ec_curve_revision) {
-        curve_revision = ec_curve_revision;
-        for (uint8_t col = 0; col < MATRIX_COLS; ++col)
-            for (uint8_t row = 0; row < MATRIX_ROWS; ++row)
-                rt_key_reset(hhkb_get_rt_key(col, row));
-    }
-    uint16_t max_travel = curve ? curve[125] : 1000;
-    if (scan_cfg.act_pm > max_travel) scan_cfg.act_pm = max_travel;
-    if (scan_cfg.press_pm > max_travel) scan_cfg.press_pm = max_travel;
-    if (scan_cfg.release_pm > max_travel) scan_cfg.release_pm = max_travel;
+    // [0] classic, [1..3] Rapid Trigger profiles. Static: only the matrix task scans, and its
+    // 1 KB stack also carries the debug printf path.
+    static rt_cfg_t cfgs[HHKB_RT_PROFILES + 1];
+    static uint8_t rt_lo[MATRIX_COLS], rt_hi[MATRIX_COLS];
+    scan_cfg_prepare(cfgs, rt_lo, rt_hi, curve);
     bool debug_topre = hhkb_get_debug_flag(DEBUG_FLAG_TOPRE);
 
     for (uint8_t col = 0; col < MATRIX_COLS; col++) {
         rt_key_t *col_keys = s_rt_keys[col];
+        uint8_t col_lo = rt_lo[col], col_hi = rt_hi[col]; // bit row: profile index bits 0 and 1
 
         if (col == 8) {
             GPIOC->BRR  = (1U << 6);
@@ -255,7 +286,8 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
                     key->latched = false;
                     is_pressed = false;
                 } else {
-                    is_pressed = rt_update_curve(key, &scan_cfg, val, curve);
+                    unsigned profile = ((col_lo >> row) & 1U) | (((col_hi >> row) & 1U) << 1);
+                    is_pressed = rt_update_curve(key, &cfgs[profile], val, curve);
                 }
             }
 

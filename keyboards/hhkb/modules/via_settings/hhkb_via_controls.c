@@ -9,6 +9,46 @@
 #include <string.h>
 #include <stdio.h>
 
+/* Per-key controls carry a key index after the value ID: [cmd, 0, id, key, value]. */
+enum {
+    HHKB_VIA_KEY_RT     = 57, // dropdown: Rapid Trigger profile 0..3 for this key
+    HHKB_VIA_KEY_ACT    = 58, // dropdown: 0 = shared actuation point, 1..45 = 0.1..4.5 mm
+    HHKB_VIA_LAYOUT     = 59, // read-only: 0 = ANSI, 1 = JIS; selects which per-key list VIA shows
+    HHKB_VIA_KEY_STATUS = 60, // read-only: per-key summary
+    // 61..64: profile 2 press, profile 2 release, profile 3 press, profile 3 release (1..45).
+    HHKB_VIA_RT_PROFILE_FIRST = 61,
+    HHKB_VIA_RT_PROFILE_LAST  = 64,
+    HHKB_VIA_RT_BOTTOM_DZ     = 65, // dropdown: RT bottom dead zone 0..10 = 0.0..1.0 mm
+};
+#ifdef HHKB_JIS
+#define HHKB_VIA_LAYOUT_VALUE 1
+#else
+#define HHKB_VIA_LAYOUT_VALUE 0
+#endif
+
+static bool via_per_key_command(uint8_t id, uint8_t const *request, uint8_t *response) {
+    // VIA key index = row * MATRIX_COLS + col, the matrix position from via.json.
+    uint8_t col = request[3] % MATRIX_COLS;
+    uint8_t row = request[3] / MATRIX_COLS;
+    if (request[0] == 0x08) {
+        response[4] = id == HHKB_VIA_KEY_RT ? hhkb_get_key_rt_profile(col, row) : hhkb_get_key_act(col, row);
+        return true;
+    }
+    if (request[0] != 0x07) return false;
+    if (id == HHKB_VIA_KEY_RT) return hhkb_set_key_rt_profile(col, row, request[4]);
+    return hhkb_set_key_act(col, row, request[4]);
+}
+
+static bool via_rt_profile_command(uint8_t id, uint8_t const *request, uint8_t *response) {
+    uint8_t profile = (uint8_t)(2 + (id - HHKB_VIA_RT_PROFILE_FIRST) / 2);
+    bool release = ((id - HHKB_VIA_RT_PROFILE_FIRST) & 1) != 0;
+    if (request[0] == 0x08) {
+        response[3] = hhkb_get_rt_profile_steps(profile, release);
+        return true;
+    }
+    return request[0] == 0x07 && hhkb_set_rt_profile_steps(profile, release, request[3]);
+}
+
 /* Channel 0: calibration, actuation and LEDs. Values 1..6 retain their IDs. */
 bool via_custom_value_command_kb(uint8_t const *request, uint8_t *response) {
     if (request[1] != 0) return false;
@@ -96,6 +136,20 @@ bool via_custom_value_command_kb(uint8_t const *request, uint8_t *response) {
         }
         if (request[0] != 0x07 || !ec_curve_set(id, request[3])) return false;
         hhkb_settings_mark_dirty();
+        return true;
+    }
+    if (id == HHKB_VIA_KEY_RT || id == HHKB_VIA_KEY_ACT) return via_per_key_command(id, request, response);
+    if (id >= HHKB_VIA_RT_PROFILE_FIRST && id <= HHKB_VIA_RT_PROFILE_LAST)
+        return via_rt_profile_command(id, request, response);
+    if (id == HHKB_VIA_RT_BOTTOM_DZ) {
+        if (request[0] == 0x08) response[3] = hhkb_get_rt_bottom_dz();
+        else return request[0] == 0x07 && hhkb_set_rt_bottom_dz(request[3]);
+        return true;
+    }
+    if (id == HHKB_VIA_LAYOUT || id == HHKB_VIA_KEY_STATUS) {
+        if (request[0] != 0x08) return false;
+        if (id == HHKB_VIA_LAYOUT) response[3] = HHKB_VIA_LAYOUT_VALUE;
+        else hhkb_get_key_cfg_status_str((char *)&response[3], 29);
         return true;
     }
     if (id < 1 || id > 29) return false;

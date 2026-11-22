@@ -44,6 +44,62 @@ typedef struct __attribute__((aligned(4))) {
 } hhkb_eeprom_cal_t;
 _Static_assert(offsetof(hhkb_eeprom_cal_t, curve) == 24 + 4 * MATRIX_ROWS * MATRIX_COLS, "Preserve the v1 settings record");
 
+/*
+ * Per-key Rapid Trigger profiles and actuation points.
+ * A separate record keeps the main record and its migrations unchanged.
+ * It uses a fixed 15x5 geometry for ANSI and JIS, and is written only once
+ * a per-key setting is used, so stock EEPROM stays untouched until then.
+ *
+ * Each key has a Rapid Trigger profile 0..3, split over two row-mask planes
+ * (rt_rows = bit 0, rt_rows_hi = bit 1). Profile 1 uses the shared RT press and
+ * release sensitivity; profiles 2 and 3 have their own. Profile 0 means no
+ * Rapid Trigger in "Selected keys" mode and profile 1 in "All keys" mode.
+ * Version 1 records (100 bytes, one plane, no profiles) load as profile 1.
+ */
+#ifdef HHKB_JIS
+#define HHKB_KEYCFG_MAGIC   0x4A504B48UL // "HKPJ"
+#else
+#define HHKB_KEYCFG_MAGIC   0x4B504B48UL // "HKPK"
+#endif
+#define HHKB_KEYCFG_ADDR    0x08081700UL
+#define HHKB_KEYCFG_VERSION 2
+#define HHKB_KEYCFG_V1_SIZE 100
+#define HHKB_KEYCFG_COLS    15
+#define HHKB_KEYCFG_ROWS    5
+#define HHKB_KEYCFG_FLAG_RT_SELECTED 0x01U
+#define HHKB_KEY_ACT_MAX    45 // per-key actuation steps of 25 permille (0.1 mm)
+#define HHKB_RT_PROFILES    3  // profile 1 = shared sensitivity, 2..3 = own sensitivity
+#define HHKB_RT_STEPS_MAX   45 // RT sensitivity steps of 25 permille (0.1 mm)
+#define HHKB_RT_BOTTOM_DZ_MAX     10 // RT bottom dead zone steps of 25 permille (0.0..1.0 mm)
+#define HHKB_RT_BOTTOM_DZ_DEFAULT 5  // 0.5 mm
+
+typedef struct __attribute__((aligned(4))) {
+    uint32_t magic;
+    uint8_t  version;
+    uint8_t  flags;                                   // bit 0: Rapid Trigger only on selected keys
+    uint16_t crc16;                                   // covers rt_rows..reserved
+    uint8_t  rt_rows[HHKB_KEYCFG_COLS];               // bit r: profile bit 0 for (col, r)
+    uint8_t  act[HHKB_KEYCFG_COLS][HHKB_KEYCFG_ROWS]; // 0 = shared point, 1..45 = steps of 25 permille
+    // Version 2. In version 1 the first two bytes were reserved (zero).
+    uint8_t  rt_profile[HHKB_RT_PROFILES - 1][2];     // profiles 2..3: press, release steps (1..45)
+    uint8_t  rt_rows_hi[HHKB_KEYCFG_COLS];            // bit r: profile bit 1 for (col, r)
+    uint8_t  rt_bottom_dz;                            // RT bottom dead zone steps + 1; 0 = default
+    uint8_t  reserved[2];
+} hhkb_eeprom_keycfg_t;
+_Static_assert(sizeof(hhkb_eeprom_keycfg_t) == 120, "Per-key record layout changed");
+_Static_assert(offsetof(hhkb_eeprom_keycfg_t, rt_profile) == HHKB_KEYCFG_V1_SIZE - 2, "Keep the version 1 layout");
+_Static_assert(MATRIX_COLS <= HHKB_KEYCFG_COLS && MATRIX_ROWS <= HHKB_KEYCFG_ROWS, "Matrix exceeds per-key record");
+_Static_assert(MATRIX_ROWS <= 8, "Rapid Trigger row masks are 8 bits wide");
+_Static_assert(USER_EEPROM_ADDR + sizeof(hhkb_eeprom_cal_t) <= HHKB_KEYCFG_ADDR, "Per-key record overlaps settings");
+_Static_assert(HHKB_KEYCFG_ADDR + sizeof(hhkb_eeprom_keycfg_t) <= 0x08081800UL, "Per-key record exceeds EEPROM");
+
+// Rapid Trigger mode reported and accepted by VIA id 3.
+enum {
+    HHKB_RT_MODE_OFF      = 0,
+    HHKB_RT_MODE_ALL      = 1,
+    HHKB_RT_MODE_SELECTED = 2,
+};
+
 // Calibration & Settings API
 void hhkb_settings_init(void);
 void hhkb_calibration_load(void);
@@ -91,6 +147,20 @@ void hhkb_rt_set(uint8_t id, uint8_t value);
 void hhkb_set_actuation_point_pct(uint8_t pct);
 uint8_t hhkb_get_actuation_point_pct(void);
 
+// Per-key settings, addressed by matrix position.
+uint8_t hhkb_get_key_rt_profile(uint8_t col, uint8_t row);                  // 0..HHKB_RT_PROFILES
+bool hhkb_set_key_rt_profile(uint8_t col, uint8_t row, uint8_t profile);
+uint8_t hhkb_get_rt_profile_steps(uint8_t profile, bool release);           // profiles 2..3
+bool hhkb_set_rt_profile_steps(uint8_t profile, bool release, uint8_t steps);
+uint8_t hhkb_get_rt_bottom_dz(void);                                        // 0..HHKB_RT_BOTTOM_DZ_MAX
+bool hhkb_set_rt_bottom_dz(uint8_t steps);
+uint8_t hhkb_get_key_act(uint8_t col, uint8_t row);
+bool hhkb_set_key_act(uint8_t col, uint8_t row, uint8_t steps);
+uint16_t hhkb_get_key_act_pm(uint8_t col, uint8_t row); // effective permille, 0 = shared point
+uint32_t hhkb_key_cfg_revision(void);
+bool hhkb_keycfg_storage_writable(void);
+void hhkb_get_key_cfg_status_str(char *buf, size_t max_len);
+
 // Debug Console & Monitoring API
 enum {
     DEBUG_FLAG_EC    = 1U << 0, // 0x01: EC matrix debug [EC]
@@ -119,7 +189,10 @@ extern uint16_t s_cal_peak[MATRIX_COLS][MATRIX_ROWS];
 extern rt_key_t s_rt_keys[MATRIX_COLS][MATRIX_ROWS];
 
 // Matrix accessors for scan module
-rt_cfg_t hhkb_get_scan_cfg(void);
+// Fills cfgs[0] (classic) and cfgs[1..3] (Rapid Trigger profiles), and per column the two
+// row-mask planes of the effective profile index (mode and "All keys" default applied).
+void hhkb_get_scan_cfgs(rt_cfg_t cfgs[HHKB_RT_PROFILES + 1], uint8_t rt_lo[MATRIX_COLS],
+                        uint8_t rt_hi[MATRIX_COLS]);
 uint16_t hhkb_get_cal_baseline(uint8_t col, uint8_t row);
 uint16_t hhkb_get_cal_peak(uint8_t col, uint8_t row);
 void hhkb_cal_accumulate_baseline(uint8_t col, uint8_t row, uint16_t val);

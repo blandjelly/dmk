@@ -14,6 +14,11 @@ class HybridSleepSettingsTest(unittest.TestCase):
         record = header[header.index('typedef struct'):header.index('_Static_assert')]
         constants = header[header.index('#ifdef HHKB_JIS'):header.index('typedef struct')]
         constants = re.sub(r'#define\s+USER_EEPROM_ADDR\s+\S+', '#define USER_EEPROM_ADDR ((uintptr_t)storage)', constants)
+        # Per-key record constants and layout; it lives after the main record in the mock storage.
+        keycfg_start = header.index('#ifdef HHKB_JIS', header.index('_Static_assert'))
+        keycfg = header[keycfg_start:header.index('_Static_assert(sizeof(hhkb_eeprom_keycfg_t)')]
+        keycfg = re.sub(r'#define\s+HHKB_KEYCFG_ADDR\s+\S+', '#define HHKB_KEYCFG_ADDR ((uintptr_t)storage + 0x200)', keycfg)
+        write_errors = source[source.index('#define EEPROM_WRITE_ERRORS'):source.index('// Writes only the words that differ')]
         decl = source[source.index('static rt_cfg_t s_rt_cfg'):source.index('static volatile bool s_settings_dirty')]
         code = r'''
 #include <assert.h>
@@ -50,6 +55,8 @@ static bool hhkb_eeprom_clear_words(volatile uint32_t *dst,size_t n){while(n--)d
 static void hhkb_settings_mark_dirty(void){++dirty;}
 bool hhkb_settings_storage_writable(void);
 static void vTaskDelay(unsigned t){(void)t;}
+#define taskENTER_CRITICAL() do{}while(0)
+#define taskEXIT_CRITICAL() do{}while(0)
 static uint16_t get_default_baseline(unsigned c,unsigned r){(void)c;(void)r;return 300;}
 static uint16_t get_default_peak(unsigned c,unsigned r){(void)c;(void)r;return 2800;}
 static void rt_cfg_defaults(rt_cfg_t *c){memset(c,0,sizeof(*c));}
@@ -60,10 +67,16 @@ void ec_curve_rebuild(void){}
 '''
         # Header prototypes for the mocked RT functions are external.
         code = code.replace('static void rt_', 'void rt_')
-        code += constants + record + decl
-        for signature in ('bool vial_keyboard_settings_reset(', 'bool hhkb_settings_storage_writable(', 'static uint16_t compute_crc16(', 'uint8_t hhkb_bt_sleep_hz(',
-                          'bool hhkb_bt_set_sleep_hz(', 'void hhkb_calibration_save_to_eeprom(',
-                          'void hhkb_calibration_load('):
+        code += constants + record + keycfg + write_errors + decl
+        for signature in ('static size_t keycfg_owned_size(', 'bool vial_keyboard_settings_reset(', 'bool hhkb_settings_storage_writable(', 'static uint16_t compute_crc16(', 'uint8_t hhkb_bt_sleep_hz(',
+                          'bool hhkb_bt_set_sleep_hz(', 'bool hhkb_keycfg_storage_writable(',
+                          'static bool eeprom_write_record(', 'static bool save_settings_record(',
+                          'static bool keycfg_has_settings(', 'static bool keycfg_save_needed(',
+                          'static bool save_keycfg_record(', 'static void keycfg_load(',
+                          'void hhkb_calibration_save_to_eeprom(', 'void hhkb_calibration_load(',
+                          'static inline bool key_in_matrix(', 'uint8_t hhkb_get_key_rt_profile(',
+                          'bool hhkb_set_key_rt_profile(', 'void hhkb_get_scan_cfgs(',
+                          'uint8_t hhkb_get_rt_bottom_dz(', 'bool hhkb_set_rt_bottom_dz('):
             code += function(source, signature) + '\n'
         code += r'''
 int main(void){
@@ -108,9 +121,101 @@ int main(void){
  // Corrupted data must not enable matrix wake or load the new rate.
  cal->led_mode[0]^=0x80;s_bt_sleep_hz=1;s_bt_matrix_wake=false;
  hhkb_calibration_load();assert(hhkb_bt_sleep_hz()==1 && !s_bt_matrix_wake);
+ // Per-key record: untouched until used, then round-trips independently of the main record.
+ uint8_t *keys=(uint8_t *)storage+0x200;
+ for(unsigned i=0;i<sizeof(hhkb_eeprom_keycfg_t);i++)assert(keys[i]==0);
+ s_rt_selected_only=true;s_rt_key_rows[3]=0x5;s_key_act[2][1]=12;s_key_act[14][MATRIX_ROWS-1]=45;
+ flash.PECR=0;hhkb_calibration_save_to_eeprom();
+ assert(((hhkb_eeprom_keycfg_t *)keys)->magic==HHKB_KEYCFG_MAGIC);
+ s_rt_selected_only=false;memset(s_rt_key_rows,0,sizeof(s_rt_key_rows));memset(s_key_act,0,sizeof(s_key_act));
+ hhkb_calibration_load();
+ assert(s_rt_selected_only && s_rt_key_rows[3]==0x5 && s_key_act[2][1]==12 && s_key_act[14][MATRIX_ROWS-1]==45);
+ // A corrupted per-key record falls back to shared settings.
+ keys[20]^=1;hhkb_calibration_load();
+ assert(!s_rt_selected_only && s_rt_key_rows[3]==0 && s_key_act[2][1]==0);
+ keys[20]^=1;
+ // Rapid Trigger profiles: second row-mask plane and profile sensitivities round-trip.
+ hhkb_eeprom_keycfg_t *kc=(hhkb_eeprom_keycfg_t *)keys;
+ // The failed load above restored defaults in RAM; set the values to save again.
+ s_rt_selected_only=true;s_rt_key_rows[3]=0x5;s_key_act[2][1]=12;
+ s_rt_key_rows_hi[7]=0x3;s_rt_profile[0][0]=1;s_rt_profile[0][1]=3;s_rt_profile[1][0]=45;s_rt_profile[1][1]=9;
+ flash.PECR=0;hhkb_calibration_save_to_eeprom();
+ assert(kc->version==HHKB_KEYCFG_VERSION);
+ memset(s_rt_key_rows_hi,0,sizeof(s_rt_key_rows_hi));memset(s_rt_profile,0,sizeof(s_rt_profile));
+ hhkb_calibration_load();
+ assert(s_rt_key_rows_hi[7]==0x3 && s_rt_key_rows[3]==0x5);
+ assert(s_rt_profile[0][0]==1 && s_rt_profile[0][1]==3 && s_rt_profile[1][0]==45 && s_rt_profile[1][1]==9);
+ // Out-of-range profile steps load as defaults.
+ kc->rt_profile[1][0]=46;
+ kc->crc16=compute_crc16(kc->rt_rows,sizeof(*kc)-offsetof(hhkb_eeprom_keycfg_t,rt_rows));
+ hhkb_calibration_load();assert(s_rt_profile[1][0]==5 && s_rt_profile[1][1]==9);
+ // Rapid Trigger bottom dead zone: 0.5 mm by default, 0..1.0 mm round-trips.
+ assert(hhkb_get_rt_bottom_dz()==HHKB_RT_BOTTOM_DZ_DEFAULT && kc->rt_bottom_dz==HHKB_RT_BOTTOM_DZ_DEFAULT+1);
+ assert(!hhkb_set_rt_bottom_dz(HHKB_RT_BOTTOM_DZ_MAX+1) && hhkb_get_rt_bottom_dz()==HHKB_RT_BOTTOM_DZ_DEFAULT);
+ for(unsigned dz=0;dz<=HHKB_RT_BOTTOM_DZ_MAX;dz++){
+  assert(hhkb_set_rt_bottom_dz(dz));
+  flash.PECR=0;hhkb_calibration_save_to_eeprom();
+  s_rt_bottom_dz=HHKB_RT_BOTTOM_DZ_DEFAULT;hhkb_calibration_load();
+  assert(hhkb_get_rt_bottom_dz()==dz && s_rt_profile[1][1]==9);
+ }
+ // Records written before the field existed (zero) and out-of-range values load the default.
+ for(unsigned stored=0;stored<=HHKB_RT_BOTTOM_DZ_MAX+2;stored+=HHKB_RT_BOTTOM_DZ_MAX+2){
+  kc->rt_bottom_dz=stored;
+  kc->crc16=compute_crc16(kc->rt_rows,sizeof(*kc)-offsetof(hhkb_eeprom_keycfg_t,rt_rows));
+  s_rt_bottom_dz=0;hhkb_calibration_load();assert(hhkb_get_rt_bottom_dz()==HHKB_RT_BOTTOM_DZ_DEFAULT);
+ }
+ // A non-default zone alone is enough to create the per-key record.
+ s_rt_selected_only=false;memset(s_rt_key_rows,0,sizeof(s_rt_key_rows));memset(s_rt_key_rows_hi,0,sizeof(s_rt_key_rows_hi));
+ memset(s_key_act,0,sizeof(s_key_act));memcpy(s_rt_profile,s_rt_profile_defaults,sizeof(s_rt_profile));
+ assert(!keycfg_has_settings());s_rt_bottom_dz=3;assert(keycfg_has_settings());
+ // Restore the record the following checks expect.
+ s_rt_bottom_dz=HHKB_RT_BOTTOM_DZ_DEFAULT;
+ s_rt_selected_only=true;s_rt_key_rows[3]=0x5;s_key_act[2][1]=12;
+ s_rt_key_rows_hi[7]=0x3;s_rt_profile[0][0]=1;s_rt_profile[0][1]=3;s_rt_profile[1][0]=5;s_rt_profile[1][1]=9;
+ flash.PECR=0;hhkb_calibration_save_to_eeprom();
+ // A version 1 record (100 bytes, one plane) loads its keys as profile 1 with default profiles.
+ memset(keys+HHKB_KEYCFG_V1_SIZE-2,0,sizeof(*kc)-(HHKB_KEYCFG_V1_SIZE-2));
+ kc->version=1;
+ kc->crc16=compute_crc16(kc->rt_rows,HHKB_KEYCFG_V1_SIZE-offsetof(hhkb_eeprom_keycfg_t,rt_rows));
+ hhkb_calibration_load();
+ assert(s_rt_selected_only && s_rt_key_rows[3]==0x5 && s_rt_key_rows_hi[7]==0 && s_key_act[2][1]==12);
+ assert(s_rt_profile[0][0]==2 && s_rt_profile[1][1]==5);
+ // Upgrading a version 1 record needs the bytes it did not own to be empty.
+ keys[110]=0xAA;assert(!hhkb_keycfg_storage_writable());
+ keys[110]=0;assert(hhkb_keycfg_storage_writable());
+ flash.PECR=0;hhkb_calibration_save_to_eeprom();assert(kc->version==HHKB_KEYCFG_VERSION);
+ // Scan mapping: Off = classic everywhere, All = Default becomes profile 1, Selected = as stored.
+ memset(s_rt_key_rows,0,sizeof(s_rt_key_rows));memset(s_rt_key_rows_hi,0,sizeof(s_rt_key_rows_hi));
+ assert(hhkb_set_key_rt_profile(1,0,2) && hhkb_set_key_rt_profile(2,1,3) && hhkb_set_key_rt_profile(3,2,1));
+ assert(!hhkb_set_key_rt_profile(1,0,4) && !hhkb_set_key_rt_profile(1,MATRIX_ROWS,1));
+ assert(hhkb_get_key_rt_profile(1,0)==2 && hhkb_get_key_rt_profile(2,1)==3 && hhkb_get_key_rt_profile(3,2)==1);
+ rt_cfg_t cfgs[HHKB_RT_PROFILES+1];uint8_t lo[MATRIX_COLS],hi[MATRIX_COLS];
+#define PROFILE(c,r) ((((lo[c])>>(r))&1)|((((hi[c])>>(r))&1)<<1))
+ s_rt_cfg.rt_enabled=false;hhkb_get_scan_cfgs(cfgs,lo,hi);
+ assert(PROFILE(1,0)==0 && PROFILE(2,1)==0 && PROFILE(4,0)==0);
+ s_rt_cfg.rt_enabled=true;s_rt_selected_only=true;hhkb_get_scan_cfgs(cfgs,lo,hi);
+ assert(PROFILE(1,0)==2 && PROFILE(2,1)==3 && PROFILE(3,2)==1 && PROFILE(4,0)==0);
+ s_rt_selected_only=false;hhkb_get_scan_cfgs(cfgs,lo,hi);
+ assert(PROFILE(1,0)==2 && PROFILE(2,1)==3 && PROFILE(3,2)==1 && PROFILE(4,0)==1);
+ s_rt_cfg.press_pm=50;s_rt_cfg.release_pm=75;s_classic_release_pm=100;
+ s_rt_profile[0][0]=1;s_rt_profile[0][1]=3;s_rt_profile[1][0]=7;s_rt_profile[1][1]=8;
+ hhkb_get_scan_cfgs(cfgs,lo,hi);
+ assert(!cfgs[0].rt_enabled && cfgs[0].release_pm==100);
+ assert(cfgs[1].rt_enabled && cfgs[1].press_pm==50 && cfgs[1].release_pm==75);
+ assert(cfgs[2].rt_enabled && cfgs[2].press_pm==25 && cfgs[2].release_pm==75);
+ assert(cfgs[3].rt_enabled && cfgs[3].press_pm==175 && cfgs[3].release_pm==200);
+ s_rt_bottom_dz=7;hhkb_get_scan_cfgs(cfgs,lo,hi);
+ for(unsigned p=0;p<=HHKB_RT_PROFILES;p++)assert(cfgs[p].bottom_dz==7);
+ assert(s_rt_cfg.bottom_dz==0); // the main record's padding byte stays zero
+ s_rt_bottom_dz=HHKB_RT_BOTTOM_DZ_DEFAULT;
  assert(vial_keyboard_settings_reset());
  for(unsigned i=0;i<sizeof(*cal);i++)assert(((uint8_t *)cal)[i]==0);
+ for(unsigned i=0;i<sizeof(hhkb_eeprom_keycfg_t);i++)assert(keys[i]==0);
  assert(hhkb_settings_storage_writable());
+ // Foreign bytes in the per-key area are never overwritten or erased.
+ keys[50]=0xAA;s_key_act[2][1]=12;assert(!hhkb_keycfg_storage_writable());
+ flash.PECR=0;hhkb_calibration_save_to_eeprom();assert(keys[0]==0 && keys[50]==0xAA);
+ assert(vial_keyboard_settings_reset() && keys[50]==0xAA);
 }
 '''
         with tempfile.TemporaryDirectory() as tmp:

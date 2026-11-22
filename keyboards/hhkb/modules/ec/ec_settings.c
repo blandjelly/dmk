@@ -49,6 +49,18 @@ static rt_cfg_t s_rt_cfg = {
 static uint16_t s_classic_release_pm = 100; // Default 10% travel hysteresis (0.4 mm)
 static uint8_t s_actuation_offset_pct = 75;
 
+// Per-key settings (separate EEPROM record, see hhkb_eeprom_keycfg_t).
+static bool s_rt_selected_only = false;              // Rapid Trigger only on keys with a profile
+static uint8_t s_rt_key_rows[MATRIX_COLS];           // bit row: profile bit 0
+static uint8_t s_rt_key_rows_hi[MATRIX_COLS];        // bit row: profile bit 1
+static uint8_t s_key_act[MATRIX_COLS][MATRIX_ROWS];  // 0 = shared point, else steps of 25 permille
+// Profiles 2..3: press and release steps of 25 permille (profile 1 uses s_rt_cfg).
+static const uint8_t s_rt_profile_defaults[HHKB_RT_PROFILES - 1][2] = {{2, 2}, {5, 5}};
+static uint8_t s_rt_profile[HHKB_RT_PROFILES - 1][2] = {{2, 2}, {5, 5}};
+static uint8_t s_rt_bottom_dz = HHKB_RT_BOTTOM_DZ_DEFAULT; // shared by all RT profiles
+// Non-zero, so the first scan applies the per-key actuation points.
+static volatile uint32_t s_key_cfg_revision = 1;
+
 static uint8_t s_scan_rate = 4; // 1000 Hz
 #ifdef HHKB_HYBRID
 static bool s_bt_oversampling;
@@ -161,8 +173,20 @@ bool vial_keyboard_reset_allowed(void) {
 #endif
 }
 
+// Bytes of the per-key area that hold our record: a version 1 record owns only its first 100.
+static size_t keycfg_owned_size(void) {
+    const volatile hhkb_eeprom_keycfg_t *kc = (const volatile hhkb_eeprom_keycfg_t *)HHKB_KEYCFG_ADDR;
+    if (kc->magic != HHKB_KEYCFG_MAGIC) return 0;
+    return kc->version == 1 ? HHKB_KEYCFG_V1_SIZE : sizeof(hhkb_eeprom_keycfg_t);
+}
+
 bool vial_keyboard_settings_reset(void) {
     s_settings_dirty = false;
+    // Clear only our own per-key record; foreign data in that area is left alone.
+    volatile uint32_t *key_words = (volatile uint32_t *)HHKB_KEYCFG_ADDR;
+    if (key_words[0] == HHKB_KEYCFG_MAGIC &&
+        !hhkb_eeprom_clear_words(key_words, keycfg_owned_size() / sizeof(*key_words)))
+        return false;
     volatile uint32_t *words = (volatile uint32_t *)USER_EEPROM_ADDR;
     const volatile hhkb_eeprom_cal_t *cal = (const volatile hhkb_eeprom_cal_t *)words;
     size_t current_size = cal->magic == USER_EEPROM_MAGIC && cal->version == USER_EEPROM_VERSION
@@ -192,19 +216,33 @@ void hhkb_settings_mark_dirty(void) {
     s_settings_dirty = true;
 }
 
-// Called by vial_eeprom_task in the USB task, before the keymap writer.
-// Do not call this EEPROM transaction concurrently from another task.
-void hhkb_calibration_save_to_eeprom(void) {
-    if (!hhkb_settings_storage_writable()) return;
-    if (FLASH->PECR & FLASH_PECR_PELOCK) {
-        FLASH->PEKEYR = 0x89ABCDEF;
-        FLASH->PEKEYR = 0x02030405;
-    }
-    if (FLASH->PECR & FLASH_PECR_PELOCK) {
-        hhkb_settings_mark_dirty();
-        return;
-    }
+// Writable when every byte the current record would newly occupy is zero.
+bool hhkb_keycfg_storage_writable(void) {
+    const volatile uint8_t *bytes = (const volatile uint8_t *)HHKB_KEYCFG_ADDR;
+    for (size_t i = keycfg_owned_size(); i < sizeof(hhkb_eeprom_keycfg_t); ++i)
+        if (bytes[i] != 0) return false;
+    return true;
+}
 
+#define EEPROM_WRITE_ERRORS (FLASH_SR_WRPERR | FLASH_SR_PGAERR | FLASH_SR_SIZERR | \
+                             FLASH_SR_NOTZEROERR | FLASH_SR_FWWERR)
+
+// Writes only the words that differ. The caller unlocks and relocks the data EEPROM.
+static bool eeprom_write_record(volatile uint32_t *dst, const uint32_t *src, size_t words) {
+    for (size_t i = 0; i < words; i++) {
+        if (dst[i] == src[i]) continue;
+        while (FLASH->SR & FLASH_SR_BSY);
+        FLASH->SR = EEPROM_WRITE_ERRORS | FLASH_SR_EOP;
+        dst[i] = src[i];
+        while (FLASH->SR & FLASH_SR_BSY);
+        if ((FLASH->SR & EEPROM_WRITE_ERRORS) || dst[i] != src[i]) return false;
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    return true;
+}
+
+// Separate noinline frames keep both record buffers off the USB task stack at once.
+__attribute__((noinline)) static bool save_settings_record(void) {
     hhkb_eeprom_cal_t cal = {0};
     cal.magic = USER_EEPROM_MAGIC;
     cal.version = USER_EEPROM_VERSION;
@@ -246,26 +284,99 @@ void hhkb_calibration_save_to_eeprom(void) {
         }
     }
     cal.crc16 = compute_crc16((const uint8_t *)&cal.baseline, sizeof(cal) - offsetof(hhkb_eeprom_cal_t, baseline));
+    return eeprom_write_record((volatile uint32_t *)USER_EEPROM_ADDR, (const uint32_t *)&cal, sizeof(cal) / 4);
+}
 
-    volatile uint32_t *dst = (volatile uint32_t *)USER_EEPROM_ADDR;
-    const uint32_t *src = (const uint32_t *)&cal;
-    for (size_t i = 0; i < sizeof(hhkb_eeprom_cal_t) / 4; i++) {
-        if (dst[i] != src[i]) {
-            while (FLASH->SR & FLASH_SR_BSY);
-            const uint32_t errors = FLASH_SR_WRPERR | FLASH_SR_PGAERR | FLASH_SR_SIZERR |
-                FLASH_SR_NOTZEROERR | FLASH_SR_FWWERR;
-            FLASH->SR = errors | FLASH_SR_EOP;
-            dst[i] = src[i];
-            while (FLASH->SR & FLASH_SR_BSY);
-            if ((FLASH->SR & errors) || dst[i] != src[i]) {
-                FLASH->PECR |= FLASH_PECR_PELOCK;
-                hhkb_settings_mark_dirty();
-                return;
-            }
-            vTaskDelay(pdMS_TO_TICKS(1));
+static bool keycfg_has_settings(void) {
+    if (s_rt_selected_only || s_rt_bottom_dz != HHKB_RT_BOTTOM_DZ_DEFAULT) return true;
+    if (memcmp(s_rt_profile, s_rt_profile_defaults, sizeof(s_rt_profile)) != 0) return true;
+    for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+        if (s_rt_key_rows[c] || s_rt_key_rows_hi[c]) return true;
+        for (uint8_t r = 0; r < MATRIX_ROWS; r++)
+            if (s_key_act[c][r]) return true;
+    }
+    return false;
+}
+
+static bool keycfg_save_needed(void) {
+    // Leave the area untouched until a per-key setting is used for the first time.
+    if (*(const volatile uint32_t *)HHKB_KEYCFG_ADDR != HHKB_KEYCFG_MAGIC && !keycfg_has_settings())
+        return false;
+    return hhkb_keycfg_storage_writable();
+}
+
+__attribute__((noinline)) static bool save_keycfg_record(void) {
+    hhkb_eeprom_keycfg_t kc = {0};
+    kc.magic = HHKB_KEYCFG_MAGIC;
+    kc.version = HHKB_KEYCFG_VERSION;
+    kc.flags = s_rt_selected_only ? HHKB_KEYCFG_FLAG_RT_SELECTED : 0;
+    for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+        kc.rt_rows[c] = s_rt_key_rows[c];
+        kc.rt_rows_hi[c] = s_rt_key_rows_hi[c];
+        for (uint8_t r = 0; r < MATRIX_ROWS; r++)
+            kc.act[c][r] = s_key_act[c][r];
+    }
+    memcpy(kc.rt_profile, s_rt_profile, sizeof(kc.rt_profile));
+    kc.rt_bottom_dz = s_rt_bottom_dz + 1;
+    kc.crc16 = compute_crc16(kc.rt_rows, sizeof(kc) - offsetof(hhkb_eeprom_keycfg_t, rt_rows));
+    return eeprom_write_record((volatile uint32_t *)HHKB_KEYCFG_ADDR, (const uint32_t *)&kc, sizeof(kc) / 4);
+}
+
+static void keycfg_load(void) {
+    s_rt_selected_only = false;
+    memset(s_rt_key_rows, 0, sizeof(s_rt_key_rows));
+    memset(s_rt_key_rows_hi, 0, sizeof(s_rt_key_rows_hi));
+    memset(s_key_act, 0, sizeof(s_key_act));
+    memcpy(s_rt_profile, s_rt_profile_defaults, sizeof(s_rt_profile));
+    s_rt_bottom_dz = HHKB_RT_BOTTOM_DZ_DEFAULT;
+    s_key_cfg_revision++;
+
+    const volatile hhkb_eeprom_keycfg_t *kc = (const volatile hhkb_eeprom_keycfg_t *)HHKB_KEYCFG_ADDR;
+    if (kc->magic != HHKB_KEYCFG_MAGIC || (kc->version != 1 && kc->version != HHKB_KEYCFG_VERSION)) return;
+    bool v2 = kc->version == HHKB_KEYCFG_VERSION;
+    size_t size = v2 ? sizeof(*kc) : HHKB_KEYCFG_V1_SIZE;
+    if (kc->crc16 != compute_crc16((const uint8_t *)&kc->rt_rows,
+                                   size - offsetof(hhkb_eeprom_keycfg_t, rt_rows))) return;
+    const uint8_t row_mask = (uint8_t)((1U << MATRIX_ROWS) - 1U);
+    s_rt_selected_only = (kc->flags & HHKB_KEYCFG_FLAG_RT_SELECTED) != 0;
+    for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+        // Version 1 had a single plane: a selected key loads as profile 1.
+        s_rt_key_rows[c] = kc->rt_rows[c] & row_mask;
+        if (v2) s_rt_key_rows_hi[c] = kc->rt_rows_hi[c] & row_mask;
+        for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
+            uint8_t steps = kc->act[c][r];
+            s_key_act[c][r] = steps <= HHKB_KEY_ACT_MAX ? steps : 0;
         }
     }
+    if (!v2) return;
+    for (unsigned p = 0; p < HHKB_RT_PROFILES - 1; p++) {
+        for (unsigned f = 0; f < 2; f++) {
+            uint8_t steps = kc->rt_profile[p][f];
+            if (steps >= 1 && steps <= HHKB_RT_STEPS_MAX) s_rt_profile[p][f] = steps;
+        }
+    }
+    // Zero in records written before this field existed keeps the default.
+    uint8_t dz = kc->rt_bottom_dz;
+    if (dz >= 1 && dz <= HHKB_RT_BOTTOM_DZ_MAX + 1) s_rt_bottom_dz = dz - 1;
+}
+
+// Called by vial_eeprom_task in the USB task, before the keymap writer.
+// Do not call this EEPROM transaction concurrently from another task.
+void hhkb_calibration_save_to_eeprom(void) {
+    bool settings = hhkb_settings_storage_writable();
+    bool keys = keycfg_save_needed();
+    if (!settings && !keys) return;
+    if (FLASH->PECR & FLASH_PECR_PELOCK) {
+        FLASH->PEKEYR = 0x89ABCDEF;
+        FLASH->PEKEYR = 0x02030405;
+    }
+    if (FLASH->PECR & FLASH_PECR_PELOCK) {
+        hhkb_settings_mark_dirty();
+        return;
+    }
+    bool ok = (!settings || save_settings_record()) && (!keys || save_keycfg_record());
     FLASH->PECR |= FLASH_PECR_PELOCK;
+    if (!ok) hhkb_settings_mark_dirty();
 }
 
 void hhkb_calibration_load(void) {
@@ -398,6 +509,7 @@ void hhkb_calibration_load(void) {
             }
         }
     }
+    keycfg_load();
 
     for (uint8_t c = 0; c < MATRIX_COLS; c++) {
         for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
@@ -530,7 +642,9 @@ void hhkb_set_system(uint8_t system) {
 uint8_t hhkb_rt_get(uint8_t id) {
     switch (id) {
     case 1: return s_rt_cfg.act_pm / 25;
-    case 3: return s_rt_cfg.rt_enabled;
+    case 3:
+        if (!s_rt_cfg.rt_enabled) return HHKB_RT_MODE_OFF;
+        return s_rt_selected_only ? HHKB_RT_MODE_SELECTED : HHKB_RT_MODE_ALL;
     case 4: return s_rt_cfg.press_pm / 25;
     case 5: return s_classic_release_pm / 25;
     case 11: return s_rt_cfg.release_pm / 25;
@@ -540,9 +654,12 @@ uint8_t hhkb_rt_get(uint8_t id) {
 }
 
 void hhkb_rt_set(uint8_t id, uint8_t value) {
+    if (id == 3 && value > HHKB_RT_MODE_SELECTED) return;
     taskENTER_CRITICAL();
     if (id == 3) {
-        s_rt_cfg.rt_enabled = value != 0;
+        // Off keeps the scope, so switching back on restores the previous key selection mode.
+        s_rt_cfg.rt_enabled = value != HHKB_RT_MODE_OFF;
+        if (value != HHKB_RT_MODE_OFF) s_rt_selected_only = value == HHKB_RT_MODE_SELECTED;
     } else if (id == 6) {
         if (value <= 6) {
             s_rt_cfg.reset_pm = value * 25;
@@ -560,7 +677,100 @@ void hhkb_rt_set(uint8_t id, uint8_t value) {
         if (id == 11) s_rt_cfg.release_pm = pm;
     }
     taskEXIT_CRITICAL();
+    s_key_cfg_revision++; // Per-key points are clamped against reset_pm.
     hhkb_settings_mark_dirty();
+}
+
+static inline bool key_in_matrix(uint8_t col, uint8_t row) {
+    return col < MATRIX_COLS && row < MATRIX_ROWS;
+}
+
+uint8_t hhkb_get_key_rt_profile(uint8_t col, uint8_t row) {
+    if (!key_in_matrix(col, row)) return 0;
+    return (uint8_t)(((s_rt_key_rows[col] >> row) & 1U) | (((s_rt_key_rows_hi[col] >> row) & 1U) << 1));
+}
+
+bool hhkb_set_key_rt_profile(uint8_t col, uint8_t row, uint8_t profile) {
+    if (!key_in_matrix(col, row) || profile > HHKB_RT_PROFILES) return false;
+    if (profile == hhkb_get_key_rt_profile(col, row)) return true;
+    uint8_t mask = (uint8_t)(1U << row);
+    // Both planes change together, so the scan never sees a half-updated profile.
+    taskENTER_CRITICAL();
+    s_rt_key_rows[col] = (profile & 1U) ? (uint8_t)(s_rt_key_rows[col] | mask) : (uint8_t)(s_rt_key_rows[col] & ~mask);
+    s_rt_key_rows_hi[col] = (profile & 2U) ? (uint8_t)(s_rt_key_rows_hi[col] | mask) : (uint8_t)(s_rt_key_rows_hi[col] & ~mask);
+    taskEXIT_CRITICAL();
+    hhkb_settings_mark_dirty();
+    return true;
+}
+
+uint8_t hhkb_get_rt_profile_steps(uint8_t profile, bool release) {
+    if (profile < 2 || profile > HHKB_RT_PROFILES) return 0;
+    return s_rt_profile[profile - 2][release ? 1 : 0];
+}
+
+bool hhkb_set_rt_profile_steps(uint8_t profile, bool release, uint8_t steps) {
+    if (profile < 2 || profile > HHKB_RT_PROFILES || steps < 1 || steps > HHKB_RT_STEPS_MAX) return false;
+    uint8_t *value = &s_rt_profile[profile - 2][release ? 1 : 0];
+    if (*value != steps) {
+        *value = steps; // Single byte store: the scan reads it atomically.
+        hhkb_settings_mark_dirty();
+    }
+    return true;
+}
+
+uint8_t hhkb_get_rt_bottom_dz(void) { return s_rt_bottom_dz; }
+
+bool hhkb_set_rt_bottom_dz(uint8_t steps) {
+    if (steps > HHKB_RT_BOTTOM_DZ_MAX) return false;
+    if (s_rt_bottom_dz != steps) {
+        s_rt_bottom_dz = steps; // Single byte store: the scan reads it atomically.
+        hhkb_settings_mark_dirty();
+    }
+    return true;
+}
+
+uint8_t hhkb_get_key_act(uint8_t col, uint8_t row) {
+    return key_in_matrix(col, row) ? s_key_act[col][row] : 0;
+}
+
+bool hhkb_set_key_act(uint8_t col, uint8_t row, uint8_t steps) {
+    if (!key_in_matrix(col, row) || steps > HHKB_KEY_ACT_MAX) return false;
+    if (s_key_act[col][row] != steps) {
+        // The scan refreshes per-key points when the revision changes; publish the value first.
+        taskENTER_CRITICAL();
+        s_key_act[col][row] = steps;
+        s_key_cfg_revision++;
+        taskEXIT_CRITICAL();
+        hhkb_settings_mark_dirty();
+    }
+    return true;
+}
+
+uint16_t hhkb_get_key_act_pm(uint8_t col, uint8_t row) {
+    uint8_t steps = hhkb_get_key_act(col, row);
+    if (steps == 0) return 0;
+    // Same rule as the shared point: it must stay above the top dead zone.
+    uint16_t pm = (uint16_t)steps * 25U;
+    uint16_t reset = s_rt_cfg.reset_pm;
+    return pm <= reset ? (uint16_t)(reset + 25U) : pm;
+}
+
+uint32_t hhkb_key_cfg_revision(void) { return s_key_cfg_revision; }
+
+void hhkb_get_key_cfg_status_str(char *buf, size_t max_len) {
+    if (!hhkb_keycfg_storage_writable()) {
+        snprintf(buf, max_len, "Area occupied: not saved");
+        return;
+    }
+    unsigned rt = 0, act = 0;
+    for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+        for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
+            if (keyboard_get_flat_key_index(r, c) < 0) continue;
+            if (hhkb_get_key_rt_profile(c, r)) rt++;
+            if (s_key_act[c][r]) act++;
+        }
+    }
+    snprintf(buf, max_len, "RT: %u, own actuation: %u", rt, act);
 }
 
 void hhkb_set_actuation_point_pct(uint8_t pct) {
@@ -702,12 +912,37 @@ void hhkb_get_cal_status_str(char *buf, size_t max_len) {
     snprintf(buf, max_len, "%u/%u saved custom ranges", custom_count, NUM_KEYS);
 }
 
-rt_cfg_t hhkb_get_scan_cfg(void) {
+void hhkb_get_scan_cfgs(rt_cfg_t cfgs[HHKB_RT_PROFILES + 1], uint8_t rt_lo[MATRIX_COLS],
+                        uint8_t rt_hi[MATRIX_COLS]) {
     taskENTER_CRITICAL();
-    rt_cfg_t cfg = s_rt_cfg;
-    if (!cfg.rt_enabled) cfg.release_pm = s_classic_release_pm;
+    rt_cfg_t base = s_rt_cfg;
+    uint16_t classic_release = s_classic_release_pm;
+    bool selected_only = s_rt_selected_only;
+    base.bottom_dz = s_rt_bottom_dz;
+    for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+        rt_lo[c] = s_rt_key_rows[c];
+        rt_hi[c] = s_rt_key_rows_hi[c];
+    }
     taskEXIT_CRITICAL();
-    return cfg;
+
+    cfgs[0] = base;
+    cfgs[0].rt_enabled = false;
+    cfgs[0].release_pm = classic_release;
+    for (unsigned p = 1; p <= HHKB_RT_PROFILES; p++) {
+        cfgs[p] = base;
+        cfgs[p].rt_enabled = true;
+        if (p >= 2) {
+            cfgs[p].press_pm = (uint16_t)(s_rt_profile[p - 2][0] * 25U);
+            cfgs[p].release_pm = (uint16_t)(s_rt_profile[p - 2][1] * 25U);
+        }
+    }
+    for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+        if (!base.rt_enabled) {
+            rt_lo[c] = rt_hi[c] = 0;                         // Off: every key is classic.
+        } else if (!selected_only) {
+            rt_lo[c] |= (uint8_t)~(rt_lo[c] | rt_hi[c]);   // All keys: profile 0 becomes 1.
+        }
+    }
 }
 
 uint16_t hhkb_get_cal_baseline(uint8_t col, uint8_t row) { return s_cal_baseline[col][row]; }
