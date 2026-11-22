@@ -133,16 +133,28 @@ From **Start calibration** until **Finish and save**, physical keys remain visib
 
 Outside an explicit calibration session, baseline and peak remain fixed: runtime ADC spikes do not expand the saved range. Recalibrate after changing domes, silencing rings or key travel.
 
-- **Actuation point:** Actuation depth (0.1–4.0 mm in 0.1 mm steps).
+- **Actuation point:** Actuation depth (0.1–4.0 mm in 0.1 mm steps). Single keys can override it in the **Key actuation** tab.
 - **Release hysteresis:** Classic mode release buffer (0.1–4.0 mm in 0.1 mm steps).
 - **Settings EEPROM:** Availability of EEPROM storage (`Writable` / `Occupied`).
 
 ### 3. Rapid Trigger
 
-- **Rapid Trigger:** Toggles continuous dynamic keystroke tracking without requiring keys to return to the top.
-- **RT press sensitivity:** Travel distance downward to re-actuate after release (0.1–4.0 mm in 0.1 mm steps).
-- **RT release sensitivity:** Travel distance upward from lowest point to de-actuate (0.1–4.0 mm in 0.1 mm steps).
+- **Rapid Trigger:** Continuous dynamic keystroke tracking without requiring keys to return to the top: `Off`, `All keys`, or `Selected keys`. With `Selected keys`, only keys assigned a profile in the **Rapid Trigger keys** tab use Rapid Trigger; the other keys use the classic actuation point and release hysteresis.
+- **Per-key settings:** Number of keys with a Rapid Trigger profile and with their own actuation point.
+- **Profile 1: press sensitivity:** Travel distance downward to re-actuate after release (0.1–4.5 mm in 0.1 mm steps).
+- **Profile 1: release sensitivity:** Travel distance upward from lowest point to de-actuate (0.1–4.5 mm in 0.1 mm steps).
+- **Profile 2 / Profile 3: press and release sensitivity:** Own sensitivities for keys assigned to these profiles (same range). Defaults: Profile 2 0.2 / 0.2 mm, Profile 3 0.5 / 0.5 mm.
 - **Top dead zone:** Upper dead zone (0.0–0.6 mm in 0.1 mm steps) where returning resets keystroke and disarms RT.
+- **Bottom dead zone:** Lower dead zone for Rapid Trigger keys (0.0–1.0 mm in 0.1 mm steps, default 0.5 mm), shared by all profiles. Once a Topre key bottoms out, the signal follows finger pressure rather than travel: pressing harder pushes it past the calibrated peak, and relaxing the finger drops it by several percent without any key movement. The deepest point that release is measured from never goes past the top of this zone (or past the calibrated peak at 0.0 mm), so a held key stays pressed and releases only after moving up by the release sensitivity from the top of the zone. Stored in the per-key record (`rt_bottom_dz`, VIA ID 65).
+
+#### Per-key Rapid Trigger and actuation
+
+- **Rapid Trigger keys:** One list per key: `Default`, `Profile 1`, `Profile 2` or `Profile 3`. The tab appears when **Rapid Trigger** is `All keys` or `Selected keys`. `Default` means no Rapid Trigger in `Selected keys` mode and Profile 1 in `All keys` mode. The top dead zone stays shared.
+- **Key actuation:** One list per key. `Shared` follows **Actuation point** from the Calibration tab; 0.1–4.5 mm sets the point for that key only. On a Rapid Trigger key, this is also the depth that arms Rapid Trigger. Like the shared point, it is kept above the top dead zone and limited to the maximum travel of the curve.
+- Settings belong to the physical key (matrix position), not to a keycode, so they apply on every layer.
+- VIA shows the ANSI or JIS list for the running firmware. VIA reads the values on connect; reconnect to refresh the **Per-key settings** summary.
+- Per-key settings use a separate 120-byte EEPROM record at `0x08081700` (version 2; a version 1 record of 100 bytes from earlier builds loads with its keys on Profile 1). Firmware writes it the first time a per-key setting changes, and only if that area is empty or already holds this record; otherwise the summary shows `Area occupied: not saved`.
+- After editing the layouts in `via.json`, regenerate both tabs with `python tools/hhkb/generate_per_key_menus.py` (`--check` verifies that they are up to date).
 
 ### 4. LED Indicators
 
@@ -242,7 +254,7 @@ In the [VIA web app](https://www.usevia.app/), open **HHKB Settings** → **Debu
 **How reset works and what it erases:**
 
 - **Accidental trigger protection:** The erase button is hidden and disarmed until the _Arm settings reset_ toggle is engaged.
-- **EEPROM configuration & calibration erase:** Firmware clears the user EEPROM region (starting at `0x08081500`), wiping custom capacitance baseline/peak calibrations, travel curve lookup tables, actuation point, Rapid Trigger sensitivities, scan rate, debug flags, and indicator modes.
+- **EEPROM configuration & calibration erase:** Firmware clears the user EEPROM region (starting at `0x08081500`), wiping custom capacitance baseline/peak calibrations, travel curve lookup tables, actuation point, Rapid Trigger sensitivities, scan rate, debug flags, and indicator modes. It also clears the per-key Rapid Trigger and actuation record at `0x08081700`.
 - **Dynamic VIA/Vial keymap reset:** All dynamic keymap layers, macros, combos, and key overrides stored in EEPROM are erased, reverting the keyboard to its default compiled-in ROM keymap.
 - **Bootloader & factory calibration safety:** The reset operation affects **only** DMK runtime settings. The original PFU Topre factory calibration data (stored at `0x08081100`/`0x08081200`) and both firmware banks (Bank 1 recovery bootloader and Bank 2) remain untouched.
 - **Automatic reboot:** Once the EEPROM regions are cleared, the microcontroller automatically executes a software system reset (`platform_system_reset()`) and boots up cleanly with default parameters.

@@ -24,8 +24,8 @@ See the detailed [Supported Models Guide](docs/en/models.md) for part numbers, c
 - [VIA](https://www.usevia.app/) or Vial support for runtime keymap changes.
 - Configurable matrix scan rate: 50, 125, 250, 500, or 1000 Hz. The stock firmware's matrix loop runs at about 50 Hz. At 50–500 Hz, optional ×4 hardware ADC oversampling improves measurement precision and reduces noise.
 - Factory thresholds, or per-key user calibration through [VIA](https://www.usevia.app/).
-- Adjustable actuation point and classic release hysteresis.
-- Rapid Trigger, including independent press and release sensitivity.
+- Adjustable actuation point and classic release hysteresis, with optional per-key actuation points.
+- Rapid Trigger, including independent press and release sensitivity, for all keys or only selected keys, with three per-key sensitivity profiles.
 - Optional hardware ADC oversampling to reduce measurement noise.
 - Two configurable LEDs; [VIA](https://www.usevia.app/) assigns Off, Debug heartbeat, Caps Lock, Fn layer, or System 2 to PA8 and PA9.
 - Mod-Tap and Layer-Tap, with configurable tapping term, permissive hold, tap preference, and quick tap.
