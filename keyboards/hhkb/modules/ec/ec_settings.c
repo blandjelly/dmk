@@ -164,6 +164,9 @@ static uint16_t get_default_peak(uint8_t col, uint8_t row) {
 }
 
 #define WORD_ALIGNED_SIZE(n) (((n) + 3U) & ~3U)
+// hhkb_calibration_load() matches the legacy records HKCA..HKCD with one range check.
+_Static_assert(USER_EEPROM_PREV_MAGIC == USER_EEPROM_OLD_MAGIC + 1 && USER_EEPROM_C_MAGIC == USER_EEPROM_OLD_MAGIC + 2 &&
+               USER_EEPROM_LEGACY_MAGIC == USER_EEPROM_OLD_MAGIC + 3, "Legacy magics must stay consecutive");
 extern bool hhkb_eeprom_clear_words(volatile uint32_t *dst, size_t words);
 
 bool vial_keyboard_reset_allowed(void) {
@@ -279,12 +282,10 @@ __attribute__((noinline)) static bool save_settings_record(void) {
                 ((s_system & 1) << 5) |
                 ((s_led_mode[0] & 3) << 6);
 
-    for (uint8_t c = 0; c < MATRIX_COLS; c++) {
-        for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
-            cal.baseline[c][r] = s_cal_baseline[c][r];
-            cal.peak[c][r] = s_cal_peak[c][r];
-        }
-    }
+    _Static_assert(sizeof(cal.baseline) == sizeof(s_cal_baseline) && sizeof(cal.peak) == sizeof(s_cal_peak),
+                   "Calibration arrays and record must match");
+    memcpy(cal.baseline, s_cal_baseline, sizeof(cal.baseline));
+    memcpy(cal.peak, s_cal_peak, sizeof(cal.peak));
     cal.crc16 = compute_crc16((const uint8_t *)&cal.baseline, sizeof(cal) - offsetof(hhkb_eeprom_cal_t, baseline));
     return eeprom_write_record((volatile uint32_t *)USER_EEPROM_ADDR, (const uint32_t *)&cal, sizeof(cal) / 4);
 }
@@ -312,12 +313,10 @@ __attribute__((noinline)) static bool save_keycfg_record(void) {
     kc.magic = HHKB_KEYCFG_MAGIC;
     kc.version = HHKB_KEYCFG_VERSION;
     kc.flags = s_rt_selected_only ? HHKB_KEYCFG_FLAG_RT_SELECTED : 0;
-    for (uint8_t c = 0; c < MATRIX_COLS; c++) {
-        kc.rt_rows[c] = s_rt_key_rows[c];
-        kc.rt_rows_hi[c] = s_rt_key_rows_hi[c];
-        for (uint8_t r = 0; r < MATRIX_ROWS; r++)
-            kc.act[c][r] = s_key_act[c][r];
-    }
+    memcpy(kc.rt_rows, s_rt_key_rows, sizeof(s_rt_key_rows));
+    memcpy(kc.rt_rows_hi, s_rt_key_rows_hi, sizeof(s_rt_key_rows_hi));
+    for (uint8_t c = 0; c < MATRIX_COLS; c++)
+        memcpy(kc.act[c], s_key_act[c], sizeof(s_key_act[c]));
     memcpy(kc.rt_profile, s_rt_profile, sizeof(kc.rt_profile));
     kc.rt_bottom_dz = s_rt_bottom_dz + 1;
     kc.crc16 = compute_crc16(kc.rt_rows, sizeof(kc) - offsetof(hhkb_eeprom_keycfg_t, rt_rows));
@@ -325,41 +324,33 @@ __attribute__((noinline)) static bool save_keycfg_record(void) {
 }
 
 static void keycfg_load(void) {
-    s_rt_selected_only = false;
-    memset(s_rt_key_rows, 0, sizeof(s_rt_key_rows));
-    memset(s_rt_key_rows_hi, 0, sizeof(s_rt_key_rows_hi));
-    memset(s_key_act, 0, sizeof(s_key_act));
-    memcpy(s_rt_profile, s_rt_profile_defaults, sizeof(s_rt_profile));
-    s_rt_bottom_dz = HHKB_RT_BOTTOM_DZ_DEFAULT;
     s_scan_cfg_revision++;
-
+    // Fields missing from the record, or out of range, load as defaults.
     const volatile hhkb_eeprom_keycfg_t *kc = (const volatile hhkb_eeprom_keycfg_t *)HHKB_KEYCFG_ADDR;
-    if (kc->magic != HHKB_KEYCFG_MAGIC || (kc->version != 1 && kc->version != HHKB_KEYCFG_VERSION)) return;
-    bool v2 = kc->version == HHKB_KEYCFG_VERSION;
-    size_t size = v2 ? sizeof(*kc) : HHKB_KEYCFG_V1_SIZE;
-    if (kc->crc16 != compute_crc16((const uint8_t *)&kc->rt_rows,
-                                   size - offsetof(hhkb_eeprom_keycfg_t, rt_rows))) return;
+    uint8_t version = kc->magic == HHKB_KEYCFG_MAGIC ? kc->version : 0;
+    size_t size = version == HHKB_KEYCFG_VERSION ? sizeof(*kc) : HHKB_KEYCFG_V1_SIZE;
+    bool valid = (version == 1 || version == HHKB_KEYCFG_VERSION) &&
+                 kc->crc16 == compute_crc16((const uint8_t *)&kc->rt_rows,
+                                            size - offsetof(hhkb_eeprom_keycfg_t, rt_rows));
+    bool v2 = valid && version == HHKB_KEYCFG_VERSION;
     const uint8_t row_mask = (uint8_t)((1U << MATRIX_ROWS) - 1U);
-    s_rt_selected_only = (kc->flags & HHKB_KEYCFG_FLAG_RT_SELECTED) != 0;
+    s_rt_selected_only = valid && (kc->flags & HHKB_KEYCFG_FLAG_RT_SELECTED) != 0;
     for (uint8_t c = 0; c < MATRIX_COLS; c++) {
         // Version 1 had a single plane: a selected key loads as profile 1.
-        s_rt_key_rows[c] = kc->rt_rows[c] & row_mask;
-        if (v2) s_rt_key_rows_hi[c] = kc->rt_rows_hi[c] & row_mask;
+        s_rt_key_rows[c] = valid ? kc->rt_rows[c] & row_mask : 0;
+        s_rt_key_rows_hi[c] = v2 ? kc->rt_rows_hi[c] & row_mask : 0;
         for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
-            uint8_t steps = kc->act[c][r];
+            uint8_t steps = valid ? kc->act[c][r] : 0;
             s_key_act[c][r] = steps <= HHKB_KEY_ACT_MAX ? steps : 0;
         }
     }
-    if (!v2) return;
-    for (unsigned p = 0; p < HHKB_RT_PROFILES - 1; p++) {
-        for (unsigned f = 0; f < 2; f++) {
-            uint8_t steps = kc->rt_profile[p][f];
-            if (steps >= 1 && steps <= HHKB_RT_STEPS_MAX) s_rt_profile[p][f] = steps;
-        }
+    for (unsigned i = 0; i < sizeof(s_rt_profile); i++) {
+        uint8_t steps = v2 ? (&kc->rt_profile[0][0])[i] : 0;
+        (&s_rt_profile[0][0])[i] = steps >= 1 && steps <= HHKB_RT_STEPS_MAX ? steps : (&s_rt_profile_defaults[0][0])[i];
     }
     // Zero in records written before this field existed keeps the default.
-    uint8_t dz = kc->rt_bottom_dz;
-    if (dz >= 1 && dz <= HHKB_RT_BOTTOM_DZ_MAX + 1) s_rt_bottom_dz = dz - 1;
+    uint8_t dz = v2 ? kc->rt_bottom_dz : 0;
+    s_rt_bottom_dz = dz >= 1 && dz <= HHKB_RT_BOTTOM_DZ_MAX + 1 ? dz - 1 : HHKB_RT_BOTTOM_DZ_DEFAULT;
 }
 
 // Called by vial_eeprom_task in the USB task, before the keymap writer.
@@ -379,6 +370,29 @@ void hhkb_calibration_save_to_eeprom(void) {
     bool ok = (!settings || save_settings_record()) && (!keys || save_keycfg_record());
     FLASH->PECR |= FLASH_PECR_PELOCK;
     if (!ok) hhkb_settings_mark_dirty();
+}
+
+// Shared by the current and legacy records: keeps each default unless the stored value is valid.
+static void load_rt_cfg(const volatile hhkb_eeprom_cal_t *cal, uint16_t max_pm) {
+    if (cal->rt.act_pm >= 25 && cal->rt.act_pm <= max_pm) s_rt_cfg.act_pm = cal->rt.act_pm;
+    if (cal->rt.press_pm >= 25 && cal->rt.press_pm <= max_pm) s_rt_cfg.press_pm = cal->rt.press_pm;
+    if (cal->rt.release_pm >= 25 && cal->rt.release_pm <= max_pm) s_rt_cfg.release_pm = cal->rt.release_pm;
+    if (cal->rt.reset_pm <= 150) s_rt_cfg.reset_pm = cal->rt.reset_pm;
+    if (s_rt_cfg.act_pm <= s_rt_cfg.reset_pm) s_rt_cfg.act_pm = s_rt_cfg.reset_pm + 25;
+    s_rt_cfg.rt_enabled = cal->rt.rt_enabled;
+    s_actuation_offset_pct = (uint8_t)(s_rt_cfg.act_pm / 10);
+}
+
+// Called after the defaults are set: a stored range replaces them only when it is plausible.
+static void load_cal_ranges(const volatile hhkb_eeprom_cal_t *cal) {
+    for (uint8_t col = 0; col < MATRIX_COLS; col++) {
+        for (uint8_t row = 0; row < MATRIX_ROWS; row++) {
+            uint16_t base = cal->baseline[col][row];
+            uint16_t peak = cal->peak[col][row];
+            if (base >= 100 && base <= 2000) s_cal_baseline[col][row] = base;
+            if (peak > s_cal_baseline[col][row] + RT_MIN_RANGE && peak <= 4095) s_cal_peak[col][row] = peak;
+        }
+    }
 }
 
 void hhkb_calibration_load(void) {
@@ -460,57 +474,22 @@ void hhkb_calibration_load(void) {
                 s_debug_flags = cal->debug_flags & 0x0f;
             }
 
-            if (cal->rt.act_pm >= 25 && cal->rt.act_pm <= (current ? 1125 : 1000)) s_rt_cfg.act_pm = cal->rt.act_pm;
-            if (cal->rt.press_pm >= 25 && cal->rt.press_pm <= (current ? 1125 : 1000)) s_rt_cfg.press_pm = cal->rt.press_pm;
-            if (cal->rt.release_pm >= 25 && cal->rt.release_pm <= (current ? 1125 : 1000)) s_rt_cfg.release_pm = cal->rt.release_pm;
-            if (cal->rt.reset_pm <= 150) s_rt_cfg.reset_pm = cal->rt.reset_pm;
-            if (s_rt_cfg.act_pm <= s_rt_cfg.reset_pm) s_rt_cfg.act_pm = s_rt_cfg.reset_pm + 25;
-            s_rt_cfg.rt_enabled = cal->rt.rt_enabled;
-            s_actuation_offset_pct = (uint8_t)(s_rt_cfg.act_pm / 10);
-            if (cal->classic_release_pm >= 25 && cal->classic_release_pm <= (current ? 1125 : 1000)) s_classic_release_pm = cal->classic_release_pm;
-
-            for (uint8_t col = 0; col < MATRIX_COLS; col++) {
-                for (uint8_t row = 0; row < MATRIX_ROWS; row++) {
-                    uint16_t def_b = get_default_baseline(col, row);
-                    uint16_t def_p = get_default_peak(col, row);
-                    s_cal_baseline[col][row] = (s_custom_calibration && cal->baseline[col][row] >= 100 && cal->baseline[col][row] <= 2000) ? cal->baseline[col][row] : def_b;
-                    s_cal_peak[col][row] = (s_custom_calibration && cal->peak[col][row] > s_cal_baseline[col][row] + RT_MIN_RANGE && cal->peak[col][row] <= 4095) ? cal->peak[col][row] : def_p;
-                }
-            }
+            uint16_t max_pm = current ? 1125 : 1000;
+            load_rt_cfg(cal, max_pm);
+            if (cal->classic_release_pm >= 25 && cal->classic_release_pm <= max_pm) s_classic_release_pm = cal->classic_release_pm;
+            if (s_custom_calibration) load_cal_ranges(cal);
         }
     }
 #ifndef HHKB_JIS
-    else if (cal->magic == USER_EEPROM_LEGACY_MAGIC || cal->magic == USER_EEPROM_C_MAGIC || cal->magic == USER_EEPROM_PREV_MAGIC || cal->magic == USER_EEPROM_OLD_MAGIC) {
+    // HKCA..HKCD: the legacy magics are consecutive.
+    else if (cal->magic - USER_EEPROM_OLD_MAGIC <= USER_EEPROM_LEGACY_MAGIC - USER_EEPROM_OLD_MAGIC) {
         // Legacy fallback
-        if (cal->magic != USER_EEPROM_OLD_MAGIC) {
-            if (cal->rt.act_pm >= 25 && cal->rt.act_pm <= 1000) s_rt_cfg.act_pm = cal->rt.act_pm;
-            if (cal->rt.press_pm >= 25 && cal->rt.press_pm <= 1000) s_rt_cfg.press_pm = cal->rt.press_pm;
-            if (cal->rt.release_pm >= 25 && cal->rt.release_pm <= 1000) s_rt_cfg.release_pm = cal->rt.release_pm;
-            if (cal->rt.reset_pm <= 150) s_rt_cfg.reset_pm = cal->rt.reset_pm;
-            if (s_rt_cfg.act_pm <= s_rt_cfg.reset_pm) s_rt_cfg.act_pm = s_rt_cfg.reset_pm + 25;
-            s_rt_cfg.rt_enabled = cal->rt.rt_enabled;
-            s_actuation_offset_pct = (uint8_t)(s_rt_cfg.act_pm / 10);
-        }
+        if (cal->magic != USER_EEPROM_OLD_MAGIC) load_rt_cfg(cal, 1000);
         s_custom_calibration = true;
-        for (uint8_t col = 0; col < MATRIX_COLS; col++) {
-            for (uint8_t row = 0; row < MATRIX_ROWS; row++) {
-                uint16_t def_b = get_default_baseline(col, row);
-                uint16_t def_p = get_default_peak(col, row);
-                s_cal_baseline[col][row] = (cal->baseline[col][row] >= 100 && cal->baseline[col][row] <= 2000) ? cal->baseline[col][row] : def_b;
-                s_cal_peak[col][row] = (cal->peak[col][row] > s_cal_baseline[col][row] + RT_MIN_RANGE && cal->peak[col][row] <= 4095) ? cal->peak[col][row] : def_p;
-            }
-        }
+        load_cal_ranges(cal);
     }
 #endif
-    else {
-        // Defaults: factory baseline + typical travel
-        for (uint8_t col = 0; col < MATRIX_COLS; col++) {
-            for (uint8_t row = 0; row < MATRIX_ROWS; row++) {
-                s_cal_baseline[col][row] = get_default_baseline(col, row);
-                s_cal_peak[col][row] = get_default_peak(col, row);
-            }
-        }
-    }
+    // Otherwise the defaults set above stay: factory baseline + typical travel.
     keycfg_load();
 
     for (uint8_t c = 0; c < MATRIX_COLS; c++) {
@@ -697,8 +676,8 @@ bool hhkb_set_key_rt_profile(uint8_t col, uint8_t row, uint8_t profile) {
     uint8_t mask = (uint8_t)(1U << row);
     // Both planes change together, so the scan never sees a half-updated profile.
     taskENTER_CRITICAL();
-    s_rt_key_rows[col] = (profile & 1U) ? (uint8_t)(s_rt_key_rows[col] | mask) : (uint8_t)(s_rt_key_rows[col] & ~mask);
-    s_rt_key_rows_hi[col] = (profile & 2U) ? (uint8_t)(s_rt_key_rows_hi[col] | mask) : (uint8_t)(s_rt_key_rows_hi[col] & ~mask);
+    s_rt_key_rows[col] = (uint8_t)((s_rt_key_rows[col] & ~mask) | ((profile & 1U) << row));
+    s_rt_key_rows_hi[col] = (uint8_t)((s_rt_key_rows_hi[col] & ~mask) | (((profile >> 1) & 1U) << row));
     taskEXIT_CRITICAL();
     hhkb_settings_mark_dirty();
     return true;
