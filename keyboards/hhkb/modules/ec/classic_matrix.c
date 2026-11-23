@@ -204,14 +204,7 @@ typedef struct {
 static uint16_t s_cal_vals[MATRIX_COLS][MATRIX_ROWS];
 
 __attribute__((noinline)) static void scan_calibrate_deferred(bool capture) {
-    for (uint8_t col = 0; col < MATRIX_COLS; col++) {
-        for (uint8_t row = 0; row < MATRIX_ROWS; row++) {
-            uint16_t val = s_cal_vals[col][row];
-            if (val == UINT16_MAX) continue; // already counted as a failed sample
-            if (capture) hhkb_cal_accumulate_baseline(col, row, val);
-            else hhkb_cal_record_peak(col, row, val);
-        }
-    }
+    hhkb_cal_process_scan(s_cal_vals, capture);
 }
 #endif
 
@@ -376,6 +369,11 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
         }
     }
     if (pending) scan_process(&ctx, pending_col, pending_row, pending_val);
+    // Disable OpAmp before any calibration work, so it is on for the same time in every scan.
+    // The first key (R0 C0) is read soon after it is enabled; its reading depends on how long the
+    // OpAmp was off (suspected cause of R0 C0 resting 85 counts below a fresh baseline).
+    GPIOC->BRR = (1U << 7);
+    scan_adc_idle();
 #ifdef HHKB_CAL_DEFERRED
     if (ctx.is_calibrating) scan_calibrate_deferred(ctx.capture);
 #endif
@@ -388,8 +386,5 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
         else hhkb_cal_decrement_samples();
     }
 
-    // Disable OpAmp
-    GPIOC->BRR = (1U << 7);
-    scan_adc_idle();
     return changed;
 }

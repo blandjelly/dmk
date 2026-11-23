@@ -1019,6 +1019,41 @@ void hhkb_cal_record_peak(uint8_t col, uint8_t row, uint16_t val) {
         }
     }
 }
+#if !(defined(HHKB_HYBRID) && defined(HHKB_JIS))
+// Calibration work for one scan, run after it. The next scan must still start on time: a scan
+// that overruns its 1 ms period changes the readings, so calibration would measure other
+// baselines than normal use sees. Most keys only need a compare; the full update runs for keys
+// that set a new peak or cross a press or release threshold.
+void hhkb_cal_process_scan(const uint16_t vals[MATRIX_COLS][MATRIX_ROWS], bool capture) {
+    const uint16_t *v = &vals[0][0];
+    uint16_t *base = &s_capture_base[0][0];
+    const uint16_t *peak = &s_capture_peak[0][0];
+    if (capture) {
+        for (unsigned i = 0; i < MATRIX_COLS * MATRIX_ROWS; i++)
+            if (v[i] != UINT16_MAX) base[i] += v[i];
+        return;
+    }
+    // Half of the keys per scan: a press lasts many scans, and the whole matrix in one pass
+    // would push calibration scans past 1 ms.
+    static bool second_half;
+    enum { KEYS = MATRIX_COLS * MATRIX_ROWS, HALF = (KEYS + 1) / 2 };
+    unsigned first = second_half ? HALF : 0, end = second_half ? KEYS : HALF;
+    second_half = !second_half;
+    uint32_t down = s_cal_down_mask[first / 32] >> (first % 32);
+    for (unsigned i = first; i < end; i++, down >>= 1) {
+        if (i % 32 == 0) down = s_cal_down_mask[i / 32];
+        uint16_t val = v[i];
+        if (val == UINT16_MAX) continue; // already counted as a failed sample
+        if (val <= peak[i]) {
+            // No new peak: only a press (up, >= base + range) or a release (down, < base + range / 2).
+            int rel = (int)val - base[i];
+            if (rel < RT_MIN_RANGE / 2) { if (!(down & 1)) continue; }
+            else if (rel < RT_MIN_RANGE || (down & 1)) continue;
+        }
+        hhkb_cal_record_peak((uint8_t)(i / MATRIX_ROWS), (uint8_t)(i % MATRIX_ROWS), val);
+    }
+}
+#endif
 bool hhkb_cal_is_capturing_baseline(void) { return s_calibration_mode && s_capture_baseline; }
 void hhkb_cal_decrement_samples(void) {
     if (--s_cal_baseline_samples == 0) {

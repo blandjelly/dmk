@@ -17,7 +17,7 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
 | `93a55eb` | Calibration samples stored during the scan, bookkeeping after the loop (not on Hybrid JIS: no RAM) | Resting offset after calibration -50 -> -40 counts |
 | `de60609`, `4beb315` | "Print status to HID Console" lists keys still missing (`[CAL] missing: R.. C..`) and, after Finish, keys left unchanged (`[CAL] unchanged:`); procedure in via-debug.md; `hybrid.c` built with `-fno-data-sections` (about 200 B flash) | Works |
 | `e5e64ee` | Resting keys take the same code path just below and above their baseline (no shortcut in the scan, no early return in `normalize()`) | Verified 2026-11-23: `avg` -5..0 (was -40..+38), R0C1 178-189 at rest (no 147/183 alternation) |
-| this commit | `CLAUDE.md`, this file, `tools/hhkb/scan_emu.py`, `[REST]` line in `HHKB_SCAN_DIAGNOSTICS` builds | - |
+| `7c94823` | `CLAUDE.md`, this file, `tools/hhkb/scan_emu.py`, `[REST]` line in `HHKB_SCAN_DIAGNOSTICS` builds | - |
 
 ## Measurements and findings
 
@@ -45,16 +45,24 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
 
 ## Open items
 
-1. **Finish verifying `e5e64ee`.** Owner's `[REST]` logs (2026-11-23, diagnostic Hybrid ANSI,
-   fresh calibration, only Polling Rate Monitor on): `avg` -5..0, `max` 21-39 (once 51),
-   `min` -73..-85 in every report (once -114..-135). Right after calibration R0C1 jumped from
-   about 185 to 214-215 every 7th report (+28, about 1 % travel); a few minutes later the jumps
-   were gone (one +10). Still open:
-   - `[SCAN]` never appeared: `CONSOLE_BUF_SIZE` 128 could not hold `[REST]` and `[SCAN]` in the
-     same second and the second line was dropped. Diagnostic builds now use 256. Get the rate.
-   - `[REST]` now names the min/max key (`min=-80@R2C5`). Check whether the steady -80 is one key
-     (a baseline captured while touched, see item 3) and what the periodic +28 after calibration
-     is (EEPROM save, VIA polling, other interrupts between keys).
+1. **Calibration scans overran 1 ms; R0 C0 rests 85 counts below its fresh baseline.** Owner's logs
+   (2026-11-23, diagnostic Hybrid ANSI, `e24d47d`, keyboard untouched):
+   - `[SCAN] actual` 1000 Hz, `raw` 860-875 us (max about 905), `work_max` about 910 us, USB loop
+     about 310 Hz. `miss` (cumulative since power-up) stood at 33999 after a calibration and at 416
+     after a replug, and did not grow while idle: the misses came from calibration scans.
+   - `[REST]` `avg` +1..+4, `min` -82..-114 always at R0 C0 (L-Shift, the first key of each scan,
+     read soon after the OpAmp is switched on), `max` +33..+51 nearly always at R1 C3 ("1").
+     R0C1 182-193 with base 182: the +28 jumps every 7 s seen earlier did not return.
+   - Emulator (`scan_emu.py`, `e24d47d`): normal scan 737 us, baseline capture 845-883 us, peak
+     phase 971 us at rest. On hardware (about x1.18) both phases pass 1 ms, so calibration ran at
+     500 Hz with the OpAmp off for about 1.1 ms between scans instead of about 0.13 ms.
+   - Change (this commit): the OpAmp is switched off before the calibration work, and that work
+     is cheaper (`hhkb_cal_process_scan`: a tight loop for the baseline; for peaks, half of the
+     keys per scan and a compare-only path for keys that cannot change). Emulated: capture
+     783 us, peak phase 795 us at rest (normal 732 us). Expected on hardware: `miss` no longer
+     grows during calibration and R0 C0 rests near its baseline. **Not verified on hardware.**
+   - If R0 C0 still reads low, give the OpAmp a fixed settle time before the first key.
+   - If R1 C3 stays at +40 after this, it is probably the key itself, not timing.
 2. **"59/60 saved custom ranges" right after a 60/60 calibration** was one key, R1 C4 ("4"), resting
    at 99 counts: the save was complete (`[CAL] record!=RAM:0`), but loading and the status label
    accepted only baselines >= 100, so after power-up that key fell back to the default range
