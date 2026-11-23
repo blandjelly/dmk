@@ -258,6 +258,33 @@ static void scan_process(scan_ctx_t *ctx, uint8_t col, uint8_t row, uint16_t val
     if (*matrix_row != prev_row) ctx->changed = true;
 }
 
+#ifdef HHKB_SCAN_DIAGNOSTICS
+#include "usb_descriptors.h"
+#include "layers.h"
+// Last ADC sample of every key: one store per key, so the scan timing stays as it is.
+static uint16_t s_diag_raw[MATRIX_COLS][MATRIX_ROWS];
+void hhkb_rest_report(void) {
+    int32_t sum = 0;
+    int min = 32767, max = -32768;
+    unsigned n = 0;
+    for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+        for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
+            if (keyboard_get_flat_key_index(r, c) < 0) continue;
+            int raw = s_diag_raw[c][r], base = hhkb_get_cal_baseline(c, r), peak = hhkb_get_cal_peak(c, r);
+            if (raw == 0 || raw == UINT16_MAX || raw > base + (peak - base) / 5) continue; // pressed
+            int d = raw - base;
+            sum += d;
+            n++;
+            if (d < min) min = d;
+            if (d > max) max = d;
+        }
+    }
+    debug_console_printf("[REST] keys=%u raw-base avg=%d min=%d max=%d | R0C1 raw=%u base=%u\r\n", n,
+                         n ? (int)(sum / (int32_t)n) : 0, n ? min : 0, n ? max : 0, s_diag_raw[1][0],
+                         hhkb_get_cal_baseline(1, 0));
+}
+#endif
+
 __attribute__((section(".RamFunc"), optimize("O2")))
 bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
 #ifdef HHKB_HYBRID
@@ -337,6 +364,9 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
             __set_PRIMASK(saved_primask);
 
             settle_start = (uint16_t)TIM2->CNT;
+#ifdef HHKB_SCAN_DIAGNOSTICS
+            s_diag_raw[col][row] = val;
+#endif
             pending = true;
             pending_col = col;
             pending_row = row;
