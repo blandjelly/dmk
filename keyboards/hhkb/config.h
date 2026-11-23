@@ -28,7 +28,13 @@
 #define VIAL 1
 #endif
 #define DEBUG_CONSOLE_ENABLE 1
+// Diagnostic builds print [REST] and [SCAN] in the same second (about 190 bytes); with 128 bytes
+// the second line was dropped whole.
+#ifdef HHKB_SCAN_DIAGNOSTICS
+#define CONSOLE_BUF_SIZE 256
+#else
 #define CONSOLE_BUF_SIZE 128
+#endif
 #ifdef HHKB_JIS
 #define DYNAMIC_KEYMAP_MACRO_BUFFER_SIZE 64
 #else

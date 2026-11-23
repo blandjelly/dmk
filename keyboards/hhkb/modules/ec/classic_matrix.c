@@ -266,6 +266,7 @@ static uint16_t s_diag_raw[MATRIX_COLS][MATRIX_ROWS];
 void hhkb_rest_report(void) {
     int32_t sum = 0;
     int min = 32767, max = -32768;
+    uint8_t min_rc = 0, max_rc = 0; // row << 4 | col of the extreme keys
     unsigned n = 0;
     for (uint8_t c = 0; c < MATRIX_COLS; c++) {
         for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
@@ -275,13 +276,14 @@ void hhkb_rest_report(void) {
             int d = raw - base;
             sum += d;
             n++;
-            if (d < min) min = d;
-            if (d > max) max = d;
+            if (d < min) { min = d; min_rc = (uint8_t)(r << 4 | c); }
+            if (d > max) { max = d; max_rc = (uint8_t)(r << 4 | c); }
         }
     }
-    debug_console_printf("[REST] keys=%u raw-base avg=%d min=%d max=%d | R0C1 raw=%u base=%u\r\n", n,
-                         n ? (int)(sum / (int32_t)n) : 0, n ? min : 0, n ? max : 0, s_diag_raw[1][0],
-                         hhkb_get_cal_baseline(1, 0));
+    if (!n) min = max = 0;
+    debug_console_printf("[REST] keys=%u avg=%d min=%d@R%uC%u max=%d@R%uC%u | R0C1 raw=%u base=%u\r\n", n,
+                         n ? (int)(sum / (int32_t)n) : 0, min, min_rc >> 4, min_rc & 15u, max, max_rc >> 4,
+                         max_rc & 15u, s_diag_raw[1][0], hhkb_get_cal_baseline(1, 0));
 }
 #endif
 

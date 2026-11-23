@@ -16,7 +16,7 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
 | `079e8a9` | Docs: EC stream shifts resting readings | - |
 | `93a55eb` | Calibration samples stored during the scan, bookkeeping after the loop (not on Hybrid JIS: no RAM) | Resting offset after calibration -50 -> -40 counts |
 | `de60609`, `4beb315` | "Print status to HID Console" lists keys still missing (`[CAL] missing: R.. C..`) and, after Finish, keys left unchanged (`[CAL] unchanged:`); procedure in via-debug.md; `hybrid.c` built with `-fno-data-sections` (about 200 B flash) | Works |
-| `e5e64ee` | Resting keys take the same code path just below and above their baseline (no shortcut in the scan, no early return in `normalize()`) | **Not verified on hardware yet** |
+| `e5e64ee` | Resting keys take the same code path just below and above their baseline (no shortcut in the scan, no early return in `normalize()`) | Verified 2026-11-23: `avg` -5..0 (was -40..+38), R0C1 178-189 at rest (no 147/183 alternation) |
 | this commit | `CLAUDE.md`, this file, `tools/hhkb/scan_emu.py`, `[REST]` line in `HHKB_SCAN_DIAGNOSTICS` builds | - |
 
 ## Measurements and findings
@@ -45,10 +45,16 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
 
 ## Open items
 
-1. **Verify `e5e64ee`** with a diagnostic build (GCC 14 needed for Hybrid diagnostics):
-   `-d HHKB_HYBRID,HHKB_SCAN_DIAGNOSTICS`. Calibrate all 60 keys, enable only Debug -> Polling
-   Rate Monitor, keyboard untouched. Expect `[REST]` `R0C1 raw` steady near `base` (no 36-count
-   jumps), `avg` near 0, and `[SCAN] actual` about 1000 Hz with `raw` still well under 1000 us.
+1. **Finish verifying `e5e64ee`.** Owner's `[REST]` logs (2026-11-23, diagnostic Hybrid ANSI,
+   fresh calibration, only Polling Rate Monitor on): `avg` -5..0, `max` 21-39 (once 51),
+   `min` -73..-85 in every report (once -114..-135). Right after calibration R0C1 jumped from
+   about 185 to 214-215 every 7th report (+28, about 1 % travel); a few minutes later the jumps
+   were gone (one +10). Still open:
+   - `[SCAN]` never appeared: `CONSOLE_BUF_SIZE` 128 could not hold `[REST]` and `[SCAN]` in the
+     same second and the second line was dropped. Diagnostic builds now use 256. Get the rate.
+   - `[REST]` now names the min/max key (`min=-80@R2C5`). Check whether the steady -80 is one key
+     (a baseline captured while touched, see item 2) and what the periodic +28 after calibration
+     is (EEPROM save, VIA polling, other interrupts between keys).
 2. **Calibration often misses keys** that Key Tester shows pressed (59/60, earlier 45/60 and 57/60).
    The emulator shows the logic counting all 60 keys (`scan_emu.py cal`). A key counts once its
    reading exceeds the captured baseline + 150 counts (`RT_MIN_RANGE`), so a full press should
