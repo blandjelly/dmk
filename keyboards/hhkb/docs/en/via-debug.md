@@ -231,6 +231,7 @@ The **HHKB Settings** → **Debug** submenu provides granular toggles for diagno
     - `travel=<norm/10>%` — Computed physical key travel percentage (0–100%) normalized against the PCHIP curve.
     - `DN` / `UP` — Binary actuation state (`DN` = pressed, `UP` = released).
   - **Quiet Threshold Filtering:** To avoid flooding the console and USB buffers, intermediate travel updates are sent only when the raw ADC signal changes by more than **±40 units**, or instantly upon any transition (`DN` $\leftrightarrow$ `UP`).
+  - **Readings shift while streaming:** The stream adds work to every key of every scan, and the sensor reading depends on that timing. On Hybrid ANSI hardware, keys at rest read about 90–100 ADC counts (3–4 % travel) higher with the stream on, so an idle key can show `travel=5%` even after a fresh calibration. Judge resting values and calibration quality with the stream off.
 
 - **Calibration Monitor:** Live step-by-step progress logging for key calibration. Outputs baseline capture completion, real-time peak updates per key (`[CAL] Key C3 R2 peak updated: 2650 -> 2890`), a visual progress bar `[====>    ] X% (N/60)`, and ready-to-save notification.
 
