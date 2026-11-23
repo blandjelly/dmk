@@ -26,10 +26,10 @@ void rt_key_set_range(rt_key_t *k, uint16_t base, uint16_t peak) {
 }
 
 static inline __attribute__((always_inline)) uint16_t normalize(const rt_key_t *k, uint16_t raw, const uint16_t *lut) {
-    if (raw <= k->base) {
-        return 0;
-    }
-    uint32_t d = (uint32_t)(raw - k->base);
+    /* No early return at or below the baseline: a resting key's noise crosses it all the time,
+     * and the scan reads the next key after this work, with a reading that depends on how long
+     * it took. The same path either way keeps that time, and the next reading, constant. */
+    uint32_t d = raw > k->base ? (uint32_t)(raw - k->base) : 0u;
     // Split the Q16 scale so both products fit in 32 bits, even for a full uint16_t sample.
     uint32_t pm = d * (k->scale >> 16) + ((d * (k->scale & UINT16_MAX) + (lut ? 32768u : 0u)) >> 16);
     if (lut) return ec_curve_apply(lut, pm > 1000 ? 1000 : (uint16_t)pm);

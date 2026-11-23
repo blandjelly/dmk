@@ -242,14 +242,9 @@ static void scan_process(scan_ctx_t *ctx, uint8_t col, uint8_t row, uint16_t val
 #endif
         // Calibrated endpoints stay fixed outside an explicit calibration.
         // A single runtime spike must not permanently expand the range.
-        if (val <= key->base) {
-            key->ext = 0;
-            key->down = false;
-            key->latched = false;
-            is_pressed = false;
-        } else {
-            is_pressed = rt_update_curve(key, &ctx->cfgs[s_key_profile[col][row]], val, ctx->curve);
-        }
+        // At or below the baseline this lands in the top dead zone and releases the key, the same
+        // as a separate shortcut would, but in the same time as a reading just above it.
+        is_pressed = rt_update_curve(key, &ctx->cfgs[s_key_profile[col][row]], val, ctx->curve);
 
         // Feed debug monitoring only when EC debug streaming is active
         if (__builtin_expect(ctx->debug_topre, 0)) {
