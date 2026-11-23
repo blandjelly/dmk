@@ -60,7 +60,16 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
      is cheaper (`hhkb_cal_process_scan`: a tight loop for the baseline; for peaks, half of the
      keys per scan and a compare-only path for keys that cannot change). Emulated: capture
      783 us, peak phase 795 us at rest (normal 732 us). Expected on hardware: `miss` no longer
-     grows during calibration and R0 C0 rests near its baseline. **Not verified on hardware.**
+     grows during calibration and R0 C0 rests near its baseline.
+   - **`457f147` broke calibration on hardware**: its scans took about 990 us (the emulator said
+     about 795), so at 1000 Hz the matrix task left almost no CPU. USB loop 20-97 Hz (normally
+     about 320), Key Tester showed stale or stuck keys, and after about 20 s the keyboard stopped
+     responding until replugged. Fixed in the next commit: the peak phase scans every other
+     period (500 Hz, as the old overrunning code did in effect); the 16-scan baseline capture keeps
+     1000 Hz. **Not verified on hardware.**
+   - Matrix task stack (1024 B): the emulator measures 816 B in the peak phase with `[CAL]`
+     printing, plus 96 B for `matrix_task` and about 64 B for an interrupt and context save. An
+     overflow resets the keyboard. Keep printf calls off this path or give the task more stack.
    - If R0 C0 still reads low, give the OpAmp a fixed settle time before the first key.
    - If R1 C3 stays at +40 after this, it is probably the key itself, not timing.
 2. **"59/60 saved custom ranges" right after a 60/60 calibration** was one key, R1 C4 ("4"), resting

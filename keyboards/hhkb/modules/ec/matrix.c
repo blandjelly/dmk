@@ -432,6 +432,10 @@ void matrix_task(void *pvParameters) {
 #else
         (void)missed;
 #endif
+        // Calibration's peak phase scans every other period. Its scans take about 990 us on Hybrid
+        // ANSI, so at 1000 Hz the USB task got 20-100 loops/s, VIA showed stale keys and the
+        // host dropped the keyboard. The 16-scan baseline capture keeps the normal period.
+        if (calibrating && !hhkb_cal_is_capturing_baseline()) ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 #else
         vTaskDelay(pdMS_TO_TICKS(1));
 #endif
