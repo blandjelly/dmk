@@ -80,6 +80,30 @@ int main(void){
 }
 ''')
 
+    def test_low_resting_baseline_survives_reload(self):
+        # A Hybrid key rested at 99 counts; a 100-count floor reset it to the default after power-up.
+        source = (ROOT / 'keyboards/hhkb/modules/ec/ec_settings.c').read_text()
+        floor = next(l for l in source.splitlines() if l.startswith('#define HHKB_CAL_BASE_MIN'))
+        self.run_c(r'''
+#include <assert.h>
+#include <stdint.h>
+#define MATRIX_COLS 1
+#define MATRIX_ROWS 3
+#define RT_MIN_RANGE 150
+''' + floor + r'''
+typedef struct {uint16_t baseline[MATRIX_COLS][MATRIX_ROWS], peak[MATRIX_COLS][MATRIX_ROWS];} hhkb_eeprom_cal_t;
+static uint16_t s_cal_baseline[MATRIX_COLS][MATRIX_ROWS] = {{800, 800, 800}};
+static uint16_t s_cal_peak[MATRIX_COLS][MATRIX_ROWS] = {{3000, 3000, 3000}};
+''' + function(source, 'static void load_cal_ranges(') + r'''
+int main(void){
+ hhkb_eeprom_cal_t cal = {{{99, 0, 186}}, {{2916, 0, 2700}}};
+ load_cal_ranges(&cal);
+ assert(s_cal_baseline[0][0] == 99 && s_cal_peak[0][0] == 2916);
+ assert(s_cal_baseline[0][1] == 800 && s_cal_peak[0][1] == 3000); /* erased record keeps defaults */
+ assert(s_cal_baseline[0][2] == 186 && s_cal_peak[0][2] == 2700);
+}
+''')
+
     def test_incomplete_baseline_restarts_instead_of_averaging_missing_sample(self):
         source = (ROOT / 'keyboards/hhkb/modules/ec/classic_matrix.c').read_text()
         block = function(source, 'if (capture) {\n        // A missing sample')

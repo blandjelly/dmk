@@ -96,6 +96,10 @@ static uint8_t s_tap_preferred = 0;
 static uint8_t s_led_mode[2] = {2, 3};
 static uint8_t s_system = 0;
 
+// Lowest stored baseline accepted when loading. It only has to reject erased or zeroed records:
+// Hybrid keys rest as low as 99 counts (R1 C4 on the owner's board), so 100 dropped real ranges.
+#define HHKB_CAL_BASE_MIN 20
+
 static volatile bool s_settings_dirty = false;
 static volatile TickType_t s_settings_dirty_time = 0;
 
@@ -389,7 +393,7 @@ static void load_cal_ranges(const volatile hhkb_eeprom_cal_t *cal) {
         for (uint8_t row = 0; row < MATRIX_ROWS; row++) {
             uint16_t base = cal->baseline[col][row];
             uint16_t peak = cal->peak[col][row];
-            if (base >= 100 && base <= 2000) s_cal_baseline[col][row] = base;
+            if (base >= HHKB_CAL_BASE_MIN && base <= 2000) s_cal_baseline[col][row] = base;
             if (peak > s_cal_baseline[col][row] + RT_MIN_RANGE && peak <= 4095) s_cal_peak[col][row] = peak;
         }
     }
@@ -891,7 +895,7 @@ void hhkb_cal_print_record(void) {
             if (keyboard_get_flat_key_index(r, c) < 0) continue;
             uint16_t base = cal->baseline[c][r], peak = cal->peak[c][r];
             if (base != s_cal_baseline[c][r] || peak != s_cal_peak[c][r]) differ++;
-            if (base >= 100 && base <= 2000 && peak > base + RT_MIN_RANGE && peak <= 4095 &&
+            if (base >= HHKB_CAL_BASE_MIN && base <= 2000 && peak > base + RT_MIN_RANGE && peak <= 4095 &&
                 (base != get_default_baseline(c, r) || peak != get_default_peak(c, r)))
                 continue;
             if (++bad <= 3)
@@ -928,7 +932,7 @@ void hhkb_get_cal_status_str(char *buf, size_t max_len) {
             if (keyboard_get_flat_key_index(r, c) < 0) continue;
             uint16_t base = cal->baseline[c][r];
             uint16_t peak = cal->peak[c][r];
-            if (base >= 100 && base <= 2000 && peak > base + RT_MIN_RANGE && peak <= 4095 &&
+            if (base >= HHKB_CAL_BASE_MIN && base <= 2000 && peak > base + RT_MIN_RANGE && peak <= 4095 &&
                 (base != get_default_baseline(c, r) || peak != get_default_peak(c, r))) {
                 custom_count++;
             }
