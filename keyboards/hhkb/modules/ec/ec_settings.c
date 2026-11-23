@@ -878,6 +878,30 @@ void hhkb_cal_print_missing(void) {
     if (len) debug_console_printf("[CAL] %s:%s\r\n", label, line);
 }
 
+#ifdef HHKB_SCAN_DIAGNOSTICS
+// Compares the stored record with the ranges in use and names the keys the status label does not
+// count (stored range implausible or equal to the defaults), with their stored baseline and peak.
+void hhkb_cal_print_record(void) {
+    const volatile hhkb_eeprom_cal_t *cal = (const volatile hhkb_eeprom_cal_t *)USER_EEPROM_ADDR;
+    char line[100];
+    unsigned differ = 0, bad = 0;
+    size_t len = 0;
+    for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+        for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
+            if (keyboard_get_flat_key_index(r, c) < 0) continue;
+            uint16_t base = cal->baseline[c][r], peak = cal->peak[c][r];
+            if (base != s_cal_baseline[c][r] || peak != s_cal_peak[c][r]) differ++;
+            if (base >= 100 && base <= 2000 && peak > base + RT_MIN_RANGE && peak <= 4095 &&
+                (base != get_default_baseline(c, r) || peak != get_default_peak(c, r)))
+                continue;
+            if (++bad <= 3)
+                len += (size_t)snprintf(line + len, sizeof(line) - len, " R%uC%u b%u p%u", r, c, base, peak);
+        }
+    }
+    debug_console_printf("[CAL] record!=RAM:%u uncounted:%u%s\r\n", differ, bad, len ? line : "");
+}
+#endif
+
 void hhkb_get_cal_status_str(char *buf, size_t max_len) {
     if (s_calibration_mode) {
         uint8_t count = calibrated_key_count();

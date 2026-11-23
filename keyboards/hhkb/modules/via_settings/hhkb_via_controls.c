@@ -227,6 +227,10 @@ bool via_custom_value_command_kb(uint8_t const *request, uint8_t *response) {
                 hhkb_get_cal_status_str(status, sizeof(status));
                 debug_console_printf("[CAL] %s\r\n", status);
                 hhkb_cal_print_missing();
+#ifdef HHKB_SCAN_DIAGNOSTICS
+                extern void hhkb_cal_print_record(void);
+                hhkb_cal_print_record();
+#endif
             }
         } else if (id != 7 && id != 8) {
             hhkb_rt_set(id, request[3]);
