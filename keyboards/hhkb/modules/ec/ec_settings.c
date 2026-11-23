@@ -853,6 +853,25 @@ void hhkb_get_debug_travel_str(char *buf, size_t max_len) {
     }
 }
 
+// Lists the keys a running calibration has not seen pressed yet, as matrix positions.
+void hhkb_cal_print_missing(void) {
+    if (!s_calibration_mode) return;
+    char line[96];
+    size_t len = 0;
+    for (uint8_t c = 0; c < MATRIX_COLS; c++) {
+        for (uint8_t r = 0; r < MATRIX_ROWS; r++) {
+            uint8_t k_idx = c * MATRIX_ROWS + r;
+            if (keyboard_get_flat_key_index(r, c) < 0 || (s_calibrated_mask[k_idx / 32] & (1U << (k_idx % 32)))) continue;
+            if (len > sizeof(line) - 10) {
+                debug_console_printf("[CAL] missing:%s\r\n", line);
+                len = 0;
+            }
+            len += (size_t)snprintf(line + len, sizeof(line) - len, " R%u C%u", r, c);
+        }
+    }
+    if (len) debug_console_printf("[CAL] missing:%s\r\n", line);
+}
+
 void hhkb_get_cal_status_str(char *buf, size_t max_len) {
     if (s_calibration_mode) {
         uint8_t count = calibrated_key_count();

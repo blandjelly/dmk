@@ -128,7 +128,7 @@ uv run tools/ec_curve_visualizer.py
 
 From **Start calibration** until **Finish and save**, physical keys remain visible in **Key Tester → Test Matrix**, but their presses are not sent as typing or keymap actions to USB or Bluetooth. Release all keys before starting and before finishing. Normal input resumes after Finish and save.
 
-- **Print status to HID Console:** Dumps active calibration progress and peak metrics to VIA HID Console.
+- **Print status to HID Console:** Prints the calibration progress to the VIA HID Console. During a calibration it also lists the keys not pressed yet as matrix positions (`[CAL] missing: R0 C1 ...`); the `row,col` labels in `via.json` name the key at each position.
 - **Finish and save:** Validates and commits calibration to EEPROM.
 
 Outside an explicit calibration session, baseline and peak remain fixed: runtime ADC spikes do not expand the saved range. Recalibrate after changing domes, silencing rings or key travel.
@@ -191,7 +191,7 @@ Check with both hands completely removed from the keyboard. If the readings stop
 
 1. Toggle on **Use custom calibration** and ensure all keys are released.
 2. Click **Start calibration** to record baseline resting capacitance levels. The baseline capture takes exactly **16 consecutive matrix scan cycles** (taking only 16 ms at a 1000 Hz scan rate; with 4x oversampling enabled, each sample hardware-averages 4 ADC conversions). The accumulated sums are divided by 16 and saved as the zero-travel reference for each individual switch.
-3. Fully press all keys you want to calibrate to record peak travel.
+3. Press every key to the bottom once with normal typing force. A key counts as calibrated as soon as it moves past the first few percent of travel, and its peak is the highest reading of the session, so repeated presses add nothing and pressing much harder than usual sets the peak above a normal bottom-out (Topre keys read finger pressure once bottomed out).
 4. Click **Finish and save** to write calibration to EEPROM (only positions with valid travel range are updated).
 
 > [!TIP]
