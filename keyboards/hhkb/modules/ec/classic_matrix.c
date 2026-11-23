@@ -184,6 +184,60 @@ __attribute__((noinline)) static void scan_adc_idle(void) {
 #endif
 }
 
+typedef struct {
+    matrix_row_t *matrix;
+    const rt_cfg_t *cfgs;
+    const uint16_t *curve;
+    bool capture;
+    bool capture_failed;
+    bool is_calibrating;
+    bool debug_topre;
+    bool changed;
+} scan_ctx_t;
+
+// Updates one key from its ADC sample. RAM-resident: it runs for every key of every scan.
+__attribute__((section(".RamFunc"), optimize("O2"), noinline))
+static void scan_process(scan_ctx_t *ctx, uint8_t col, uint8_t row, uint16_t val) {
+    matrix_row_t *matrix_row = &ctx->matrix[row];
+    matrix_row_t prev_row = *matrix_row;
+    rt_key_t *key = &s_rt_keys[col][row];
+    bool is_pressed;
+
+    if (val == UINT16_MAX) {
+        // Never calibrate or update RT state from a stale ADC data register.
+        if (ctx->capture) ctx->capture_failed = true;
+        is_pressed = key->down;
+    } else {
+        if (ctx->is_calibrating) {
+            if (ctx->capture) {
+                hhkb_cal_accumulate_baseline(col, row, val);
+            } else {
+                hhkb_cal_record_peak(col, row, val);
+            }
+        }
+        // Calibrated endpoints stay fixed outside an explicit calibration.
+        // A single runtime spike must not permanently expand the range.
+        if (val <= key->base) {
+            key->ext = 0;
+            key->down = false;
+            key->latched = false;
+            is_pressed = false;
+        } else {
+            is_pressed = rt_update_curve(key, &ctx->cfgs[s_key_profile[col][row]], val, ctx->curve);
+        }
+
+        // Feed debug monitoring only when EC debug streaming is active
+        if (__builtin_expect(ctx->debug_topre, 0)) {
+            uint16_t norm = rt_normalize_curve(key, val, ctx->curve);
+            hhkb_debug_feed_sample(col, row, val, norm, is_pressed);
+        }
+    }
+
+    if (is_pressed) *matrix_row |= (matrix_row_t)(1U << col);
+    else *matrix_row &= (matrix_row_t)~(1U << col);
+    if (*matrix_row != prev_row) ctx->changed = true;
+}
+
 __attribute__((section(".RamFunc"), optimize("O2")))
 bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
 #ifdef HHKB_HYBRID
@@ -194,7 +248,6 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
     hhkb_record_matrix_scan();
     scan_adc_prepare();
 
-    bool changed = false;
     uint16_t row_settle_us = (ADC1->CFGR1 & ADC_CFGR1_AUTOFF) ? 25 : 3;
     static const uint16_t row_pins[MATRIX_ROWS] = HHKB_ROW_BITS;
     static const uint32_t col_mux_bsrr[MATRIX_COLS] = {
@@ -210,20 +263,28 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
     GPIOC->BSRR = (1U << 6);
     GPIOB->BRR  = (1U << 15);
 
-    bool capture = hhkb_cal_is_capturing_baseline();
-    bool capture_failed = false;
-    bool is_calibrating = hhkb_is_calibrating();
-    const uint16_t *curve = ec_curve_lut;
+    scan_ctx_t ctx = {
+        .matrix = current_matrix,
+        .curve = ec_curve_lut,
+        .capture = hhkb_cal_is_capturing_baseline(),
+        .is_calibrating = hhkb_is_calibrating(),
+        .debug_topre = hhkb_get_debug_flag(DEBUG_FLAG_TOPRE),
+    };
     // [0] classic, [1..3] Rapid Trigger profiles. Static: only the matrix task scans, and its
     // 1 KB stack also carries the debug printf path.
     static rt_cfg_t cfgs[HHKB_RT_PROFILES + 1];
-    scan_cfg_prepare(cfgs, curve);
-    bool debug_topre = hhkb_get_debug_flag(DEBUG_FLAG_TOPRE);
+    scan_cfg_prepare(cfgs, ctx.curve);
+    ctx.cfgs = cfgs;
+
+    // The previous key's sample is processed while C57 discharges for the next one, so the
+    // key logic costs no scan time of its own. Each strobe still follows the previous row's
+    // release (or the column switch) by the same 4 us as before: 2 us settle + 2 us discharge.
+    // C57 is now held discharged for the whole interval instead of its last 2 us.
+    bool pending = false;
+    uint8_t pending_col = 0, pending_row = 0;
+    uint16_t pending_val = 0;
 
     for (uint8_t col = 0; col < MATRIX_COLS; col++) {
-        rt_key_t *col_keys = s_rt_keys[col];
-        const uint8_t *col_profiles = s_key_profile[col];
-
         if (col == 8) {
             GPIOC->BRR  = (1U << 6);
             GPIOB->BSRR = (1U << 15);
@@ -237,16 +298,13 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
             static const uint8_t populated[MATRIX_COLS] = {29, 27, 29, 31, 29, 29, 31, 29, 31, 31, 31, 31, 31, 31, 31};
             if (!(populated[col] & (1U << row))) continue;
 #endif
-            matrix_row_t prev_row = current_matrix[row];
-
-            scan_wait_since(settle_start, 2);
+            // Discharge capacitor C57
+            GPIOC->BSRR = (1U << 8);
+            if (pending) scan_process(&ctx, pending_col, pending_row, pending_val);
+            scan_wait_since(settle_start, 4);
 
             uint32_t saved_primask = __get_PRIMASK();
             __disable_irq();
-
-            // Discharge capacitor C57
-            GPIOC->BSRR = (1U << 8);
-            scan_delay_us(2);
             GPIOC->BRR  = (1U << 8);
 
             // Drive row strobe active (LOW)
@@ -259,53 +317,15 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
             __set_PRIMASK(saved_primask);
 
             settle_start = (uint16_t)TIM2->CNT;
-
-            // Never calibrate or update RT state from a stale ADC data register.
-            if (val == UINT16_MAX) {
-                if (capture) capture_failed = true;
-                if (col_keys[row].down) current_matrix[row] |= 1U << col;
-                else current_matrix[row] &= ~(1U << col);
-                if (current_matrix[row] != prev_row) changed = true;
-                continue;
-            }
-
-            if (is_calibrating) {
-                if (capture) {
-                    hhkb_cal_accumulate_baseline(col, row, val);
-                } else {
-                    hhkb_cal_record_peak(col, row, val);
-                }
-            }
-            // Calibrated endpoints stay fixed outside an explicit calibration.
-            // A single runtime spike must not permanently expand the range.
-
-            bool is_pressed;
-            rt_key_t *key = &col_keys[row];
-            {
-                if (val <= key->base) {
-                    key->ext = 0;
-                    key->down = false;
-                    key->latched = false;
-                    is_pressed = false;
-                } else {
-                    is_pressed = rt_update_curve(key, &cfgs[col_profiles[row]], val, curve);
-                }
-            }
-
-            // Feed debug monitoring only when EC debug streaming is active
-            if (__builtin_expect(debug_topre, 0)) {
-                uint16_t norm = rt_normalize_curve(key, val, curve);
-                hhkb_debug_feed_sample(col, row, val, norm, is_pressed);
-            }
-
-            if (is_pressed) current_matrix[row] |= (1U << col);
-            else current_matrix[row] &= ~(1U << col);
-
-            if (current_matrix[row] != prev_row) {
-                changed = true;
-            }
+            pending = true;
+            pending_col = col;
+            pending_row = row;
+            pending_val = val;
         }
     }
+    if (pending) scan_process(&ctx, pending_col, pending_row, pending_val);
+    bool capture = ctx.capture, capture_failed = ctx.capture_failed;
+    bool changed = ctx.changed;
 
     if (capture) {
         // A missing sample must not bias the 16-frame baseline average.
