@@ -140,33 +140,36 @@ static void clamp_cfg_to_travel(rt_cfg_t *cfg, uint16_t max_travel) {
     if (cfg->release_pm > max_travel) cfg->release_pm = max_travel;
 }
 
+// Rapid Trigger profile of each key, the index into the scan's configurations ([0] classic).
+static uint8_t s_key_profile[MATRIX_COLS][MATRIX_ROWS];
+
 // Runs from flash: only the per-key loop needs the scarce RAM-resident code.
-__attribute__((noinline)) static void scan_cfg_prepare(rt_cfg_t cfgs[HHKB_RT_PROFILES + 1],
-                                                       uint8_t rt_lo[MATRIX_COLS], uint8_t rt_hi[MATRIX_COLS],
-                                                       const uint16_t *curve) {
+// Settings change rarely, so the configuration is rebuilt only after a change or a new curve:
+// the scan must fit its 1 ms period, and rebuilding it every pass costs tens of microseconds.
+__attribute__((noinline)) static void scan_cfg_prepare(rt_cfg_t cfgs[HHKB_RT_PROFILES + 1], const uint16_t *curve) {
     static uint32_t curve_revision;
-    static uint32_t key_cfg_revision;
-    hhkb_get_scan_cfgs(cfgs, rt_lo, rt_hi);
+    static uint32_t cfg_revision;
     bool curve_changed = curve_revision != ec_curve_revision;
+    uint32_t revision = hhkb_scan_cfg_revision();
+    if (!curve_changed && revision == cfg_revision) return;
+    // Read the revision before the settings: a change in between only causes one more rebuild.
+    cfg_revision = revision;
     if (curve_changed) {
         curve_revision = ec_curve_revision;
         for (uint8_t col = 0; col < MATRIX_COLS; ++col)
             for (uint8_t row = 0; row < MATRIX_ROWS; ++row)
                 rt_key_reset(hhkb_get_rt_key(col, row));
     }
+    uint8_t rt_lo[MATRIX_COLS], rt_hi[MATRIX_COLS]; // bit row: profile index bits 0 and 1
+    hhkb_get_scan_cfgs(cfgs, rt_lo, rt_hi);
     uint16_t max_travel = curve ? curve[125] : 1000;
     for (unsigned p = 0; p <= HHKB_RT_PROFILES; p++)
         clamp_cfg_to_travel(&cfgs[p], max_travel);
-
-    // Per-key actuation points change rarely; refresh them only after an edit or a new curve.
-    uint32_t revision = hhkb_key_cfg_revision();
-    if (curve_changed || revision != key_cfg_revision) {
-        key_cfg_revision = revision;
-        for (uint8_t col = 0; col < MATRIX_COLS; ++col) {
-            for (uint8_t row = 0; row < MATRIX_ROWS; ++row) {
-                uint16_t act = hhkb_get_key_act_pm(col, row);
-                hhkb_get_rt_key(col, row)->act_pm = act > max_travel ? max_travel : act;
-            }
+    for (uint8_t col = 0; col < MATRIX_COLS; ++col) {
+        for (uint8_t row = 0; row < MATRIX_ROWS; ++row) {
+            uint16_t act = hhkb_get_key_act_pm(col, row);
+            hhkb_get_rt_key(col, row)->act_pm = act > max_travel ? max_travel : act;
+            s_key_profile[col][row] = (uint8_t)(((rt_lo[col] >> row) & 1U) | (((rt_hi[col] >> row) & 1U) << 1));
         }
     }
 }
@@ -214,13 +217,12 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
     // [0] classic, [1..3] Rapid Trigger profiles. Static: only the matrix task scans, and its
     // 1 KB stack also carries the debug printf path.
     static rt_cfg_t cfgs[HHKB_RT_PROFILES + 1];
-    static uint8_t rt_lo[MATRIX_COLS], rt_hi[MATRIX_COLS];
-    scan_cfg_prepare(cfgs, rt_lo, rt_hi, curve);
+    scan_cfg_prepare(cfgs, curve);
     bool debug_topre = hhkb_get_debug_flag(DEBUG_FLAG_TOPRE);
 
     for (uint8_t col = 0; col < MATRIX_COLS; col++) {
         rt_key_t *col_keys = s_rt_keys[col];
-        uint8_t col_lo = rt_lo[col], col_hi = rt_hi[col]; // bit row: profile index bits 0 and 1
+        const uint8_t *col_profiles = s_key_profile[col];
 
         if (col == 8) {
             GPIOC->BRR  = (1U << 6);
@@ -286,8 +288,7 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
                     key->latched = false;
                     is_pressed = false;
                 } else {
-                    unsigned profile = ((col_lo >> row) & 1U) | (((col_hi >> row) & 1U) << 1);
-                    is_pressed = rt_update_curve(key, &cfgs[profile], val, curve);
+                    is_pressed = rt_update_curve(key, &cfgs[col_profiles[row]], val, curve);
                 }
             }
 

@@ -58,8 +58,9 @@ static uint8_t s_key_act[MATRIX_COLS][MATRIX_ROWS];  // 0 = shared point, else s
 static const uint8_t s_rt_profile_defaults[HHKB_RT_PROFILES - 1][2] = {{2, 2}, {5, 5}};
 static uint8_t s_rt_profile[HHKB_RT_PROFILES - 1][2] = {{2, 2}, {5, 5}};
 static uint8_t s_rt_bottom_dz = HHKB_RT_BOTTOM_DZ_DEFAULT; // shared by all RT profiles
-// Non-zero, so the first scan applies the per-key actuation points.
-static volatile uint32_t s_key_cfg_revision = 1;
+// Bumped after every settings change; the scan rebuilds its configuration only then.
+// Non-zero, so the first scan builds it.
+static volatile uint32_t s_scan_cfg_revision = 1;
 
 static uint8_t s_scan_rate = 4; // 1000 Hz
 #ifdef HHKB_HYBRID
@@ -212,6 +213,7 @@ bool hhkb_settings_storage_writable(void) {
 }
 
 void hhkb_settings_mark_dirty(void) {
+    s_scan_cfg_revision++; // after the caller stored the new value
     s_settings_dirty_time = xTaskGetTickCount();
     s_settings_dirty = true;
 }
@@ -329,7 +331,7 @@ static void keycfg_load(void) {
     memset(s_key_act, 0, sizeof(s_key_act));
     memcpy(s_rt_profile, s_rt_profile_defaults, sizeof(s_rt_profile));
     s_rt_bottom_dz = HHKB_RT_BOTTOM_DZ_DEFAULT;
-    s_key_cfg_revision++;
+    s_scan_cfg_revision++;
 
     const volatile hhkb_eeprom_keycfg_t *kc = (const volatile hhkb_eeprom_keycfg_t *)HHKB_KEYCFG_ADDR;
     if (kc->magic != HHKB_KEYCFG_MAGIC || (kc->version != 1 && kc->version != HHKB_KEYCFG_VERSION)) return;
@@ -677,7 +679,6 @@ void hhkb_rt_set(uint8_t id, uint8_t value) {
         if (id == 11) s_rt_cfg.release_pm = pm;
     }
     taskEXIT_CRITICAL();
-    s_key_cfg_revision++; // Per-key points are clamped against reset_pm.
     hhkb_settings_mark_dirty();
 }
 
@@ -712,7 +713,7 @@ bool hhkb_set_rt_profile_steps(uint8_t profile, bool release, uint8_t steps) {
     if (profile < 2 || profile > HHKB_RT_PROFILES || steps < 1 || steps > HHKB_RT_STEPS_MAX) return false;
     uint8_t *value = &s_rt_profile[profile - 2][release ? 1 : 0];
     if (*value != steps) {
-        *value = steps; // Single byte store: the scan reads it atomically.
+        *value = steps;
         hhkb_settings_mark_dirty();
     }
     return true;
@@ -723,7 +724,7 @@ uint8_t hhkb_get_rt_bottom_dz(void) { return s_rt_bottom_dz; }
 bool hhkb_set_rt_bottom_dz(uint8_t steps) {
     if (steps > HHKB_RT_BOTTOM_DZ_MAX) return false;
     if (s_rt_bottom_dz != steps) {
-        s_rt_bottom_dz = steps; // Single byte store: the scan reads it atomically.
+        s_rt_bottom_dz = steps;
         hhkb_settings_mark_dirty();
     }
     return true;
@@ -736,11 +737,7 @@ uint8_t hhkb_get_key_act(uint8_t col, uint8_t row) {
 bool hhkb_set_key_act(uint8_t col, uint8_t row, uint8_t steps) {
     if (!key_in_matrix(col, row) || steps > HHKB_KEY_ACT_MAX) return false;
     if (s_key_act[col][row] != steps) {
-        // The scan refreshes per-key points when the revision changes; publish the value first.
-        taskENTER_CRITICAL();
-        s_key_act[col][row] = steps;
-        s_key_cfg_revision++;
-        taskEXIT_CRITICAL();
+        s_key_act[col][row] = steps; // the scan picks it up after hhkb_settings_mark_dirty()
         hhkb_settings_mark_dirty();
     }
     return true;
@@ -755,7 +752,7 @@ uint16_t hhkb_get_key_act_pm(uint8_t col, uint8_t row) {
     return pm <= reset ? (uint16_t)(reset + 25U) : pm;
 }
 
-uint32_t hhkb_key_cfg_revision(void) { return s_key_cfg_revision; }
+uint32_t hhkb_scan_cfg_revision(void) { return s_scan_cfg_revision; }
 
 void hhkb_get_key_cfg_status_str(char *buf, size_t max_len) {
     if (!hhkb_keycfg_storage_writable()) {

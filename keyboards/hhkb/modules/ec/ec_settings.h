@@ -157,7 +157,7 @@ bool hhkb_set_rt_bottom_dz(uint8_t steps);
 uint8_t hhkb_get_key_act(uint8_t col, uint8_t row);
 bool hhkb_set_key_act(uint8_t col, uint8_t row, uint8_t steps);
 uint16_t hhkb_get_key_act_pm(uint8_t col, uint8_t row); // effective permille, 0 = shared point
-uint32_t hhkb_key_cfg_revision(void);
+uint32_t hhkb_scan_cfg_revision(void);  // changes after any settings change
 bool hhkb_keycfg_storage_writable(void);
 void hhkb_get_key_cfg_status_str(char *buf, size_t max_len);
 

@@ -44,7 +44,10 @@ uint16_t rt_normalize_curve(const rt_key_t *k, uint16_t raw, const uint16_t *lut
     return normalize(k, raw, lut);
 }
 
-#ifdef HHKB_SCAN_1KHZ
+/* Called for every key from the RAM-resident scan; from flash, its wait states and the
+ * long-call veneer cost tens of microseconds per 1 ms scan. config.h is not included here,
+ * so HHKB_SCAN_1KHZ alone never applied; host test builds keep the default section. */
+#if defined(HHKB_SCAN_1KHZ) || defined(__arm__)
 __attribute__((section(".RamFunc"), optimize("O2")))
 #endif
 bool rt_update_curve(rt_key_t *k, const rt_cfg_t *c, uint16_t raw, const uint16_t *lut) {
