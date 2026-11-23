@@ -195,19 +195,9 @@ typedef struct {
     bool changed;
 } scan_ctx_t;
 
-// Release to strobe interval of every key. The sensor reading depends on it: about 50 ADC counts
-// per microsecond here, so it must not vary with the work done meanwhile. The key logic below
-// runs inside it and must stay shorter (about 4 us at 32 MHz).
-#define SCAN_GAP_US 6U
-
-#ifdef HHKB_SCAN_DIAGNOSTICS
-static volatile uint32_t s_scan_gap_late;
-uint32_t hhkb_scan_gap_late(void) { return s_scan_gap_late; }
-#endif
-
 // Updates one key from its ADC sample. RAM-resident: it runs for every key of every scan.
 __attribute__((section(".RamFunc"), optimize("O2"), noinline))
-static bool scan_process(scan_ctx_t *ctx, uint8_t col, uint8_t row, uint16_t val) {
+static void scan_process(scan_ctx_t *ctx, uint8_t col, uint8_t row, uint16_t val) {
     matrix_row_t *matrix_row = &ctx->matrix[row];
     matrix_row_t prev_row = *matrix_row;
     rt_key_t *key = &s_rt_keys[col][row];
@@ -217,32 +207,35 @@ static bool scan_process(scan_ctx_t *ctx, uint8_t col, uint8_t row, uint16_t val
         // Never calibrate or update RT state from a stale ADC data register.
         if (ctx->capture) ctx->capture_failed = true;
         is_pressed = key->down;
-    } else if (val <= key->base) {
+    } else {
+        if (ctx->is_calibrating) {
+            if (ctx->capture) {
+                hhkb_cal_accumulate_baseline(col, row, val);
+            } else {
+                hhkb_cal_record_peak(col, row, val);
+            }
+        }
         // Calibrated endpoints stay fixed outside an explicit calibration.
         // A single runtime spike must not permanently expand the range.
-        key->ext = 0;
-        key->down = false;
-        key->latched = false;
-        is_pressed = false;
-    } else {
-        is_pressed = rt_update_curve(key, &ctx->cfgs[s_key_profile[col][row]], val, ctx->curve);
+        if (val <= key->base) {
+            key->ext = 0;
+            key->down = false;
+            key->latched = false;
+            is_pressed = false;
+        } else {
+            is_pressed = rt_update_curve(key, &ctx->cfgs[s_key_profile[col][row]], val, ctx->curve);
+        }
+
+        // Feed debug monitoring only when EC debug streaming is active
+        if (__builtin_expect(ctx->debug_topre, 0)) {
+            uint16_t norm = rt_normalize_curve(key, val, ctx->curve);
+            hhkb_debug_feed_sample(col, row, val, norm, is_pressed);
+        }
     }
 
     if (is_pressed) *matrix_row |= (matrix_row_t)(1U << col);
     else *matrix_row &= (matrix_row_t)~(1U << col);
     if (*matrix_row != prev_row) ctx->changed = true;
-    return is_pressed;
-}
-
-// Outside the release-to-strobe gap and rarely enabled: these stay in flash to save RAM.
-__attribute__((noinline)) static void scan_debug_feed(const scan_ctx_t *ctx, uint8_t col, uint8_t row,
-                                                      uint16_t val, bool down) {
-    hhkb_debug_feed_sample(col, row, val, rt_normalize_curve(&s_rt_keys[col][row], val, ctx->curve), down);
-}
-
-__attribute__((noinline)) static void scan_calibrate(const scan_ctx_t *ctx, uint8_t col, uint8_t row, uint16_t val) {
-    if (ctx->capture) hhkb_cal_accumulate_baseline(col, row, val);
-    else hhkb_cal_record_peak(col, row, val);
 }
 
 __attribute__((section(".RamFunc"), optimize("O2")))
@@ -255,10 +248,7 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
     hhkb_record_matrix_scan();
     scan_adc_prepare();
 
-    // Battery: slow ADC clock and CPU, interrupts stay enabled outside the analog sample.
-    const bool slow = (ADC1->CFGR1 & ADC_CFGR1_AUTOFF) != 0;
-    const uint16_t row_settle_us = slow ? 25 : 3;
-    const uint32_t saved_primask = __get_PRIMASK();
+    uint16_t row_settle_us = (ADC1->CFGR1 & ADC_CFGR1_AUTOFF) ? 25 : 3;
     static const uint16_t row_pins[MATRIX_ROWS] = HHKB_ROW_BITS;
     static const uint32_t col_mux_bsrr[MATRIX_COLS] = {
         0x70000000, 0x60001000, 0x50002000, 0x40003000,
@@ -286,16 +276,15 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
     scan_cfg_prepare(cfgs, ctx.curve);
     ctx.cfgs = cfgs;
 
-    // Each key: release of the previous row (or the column switch), SCAN_GAP_US with C57
-    // discharged, strobe, settle, ADC. The previous key's logic runs during that gap, so it costs
-    // no scan time of its own. Interrupts, calibration and debug output run while the sampled row
-    // is still strobed, never inside the gap, which keeps the gap and the readings constant.
-    bool pending = false, pending_down = false;
+    // The previous key's sample is processed while C57 discharges for the next one, so the
+    // key logic costs no scan time of its own. Each strobe still follows the previous row's
+    // release (or the column switch) by the same 4 us as before: 2 us settle + 2 us discharge.
+    // C57 is now held discharged for the whole interval instead of its last 2 us.
+    bool pending = false;
     uint8_t pending_col = 0, pending_row = 0;
     uint16_t pending_val = 0;
 
     for (uint8_t col = 0; col < MATRIX_COLS; col++) {
-        if (!slow) __disable_irq();
         if (col == 8) {
             GPIOC->BRR  = (1U << 6);
             GPIOB->BSRR = (1U << 15);
@@ -311,13 +300,10 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
 #endif
             // Discharge capacitor C57
             GPIOC->BSRR = (1U << 8);
-            if (pending) pending_down = scan_process(&ctx, pending_col, pending_row, pending_val);
-#ifdef HHKB_SCAN_DIAGNOSTICS
-            if ((uint16_t)((uint16_t)TIM2->CNT - settle_start) >= SCAN_GAP_US * HHKB_SCAN_TIMER_TICKS_PER_US)
-                s_scan_gap_late++;
-#endif
-            scan_wait_since(settle_start, SCAN_GAP_US);
+            if (pending) scan_process(&ctx, pending_col, pending_row, pending_val);
+            scan_wait_since(settle_start, 4);
 
+            uint32_t saved_primask = __get_PRIMASK();
             __disable_irq();
             GPIOC->BRR  = (1U << 8);
 
@@ -326,14 +312,10 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
             scan_delay_us(row_settle_us);
 
             uint16_t val = adc_read_sample(saved_primask);
+            GPIOB->BSRR = row_pins[row];
 
             __set_PRIMASK(saved_primask);
-            if (__builtin_expect(ctx.debug_topre, 0) && pending)
-                scan_debug_feed(&ctx, pending_col, pending_row, pending_val, pending_down);
-            if (__builtin_expect(ctx.is_calibrating, 0) && val != UINT16_MAX) scan_calibrate(&ctx, col, row, val);
-            if (!slow) __disable_irq();
 
-            GPIOB->BSRR = row_pins[row];
             settle_start = (uint16_t)TIM2->CNT;
             pending = true;
             pending_col = col;
@@ -341,11 +323,7 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
             pending_val = val;
         }
     }
-    __set_PRIMASK(saved_primask);
-    if (pending) {
-        pending_down = scan_process(&ctx, pending_col, pending_row, pending_val);
-        if (__builtin_expect(ctx.debug_topre, 0)) scan_debug_feed(&ctx, pending_col, pending_row, pending_val, pending_down);
-    }
+    if (pending) scan_process(&ctx, pending_col, pending_row, pending_val);
     bool capture = ctx.capture, capture_failed = ctx.capture_failed;
     bool changed = ctx.changed;
 
