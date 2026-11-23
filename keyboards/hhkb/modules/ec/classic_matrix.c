@@ -195,6 +195,26 @@ typedef struct {
     bool changed;
 } scan_ctx_t;
 
+// The reading depends on how long each key's scan step takes. Recording calibration samples
+// inline makes those steps longer than in normal use and biases the baseline upward (about 50
+// ADC counts on Hybrid ANSI). Where RAM allows, the scan only stores the samples and the
+// calibration runs after the loop. Hybrid JIS has under 100 bytes of RAM left for this buffer.
+#if !(defined(HHKB_HYBRID) && defined(HHKB_JIS))
+#define HHKB_CAL_DEFERRED 1
+static uint16_t s_cal_vals[MATRIX_COLS][MATRIX_ROWS];
+
+__attribute__((noinline)) static void scan_calibrate_deferred(bool capture) {
+    for (uint8_t col = 0; col < MATRIX_COLS; col++) {
+        for (uint8_t row = 0; row < MATRIX_ROWS; row++) {
+            uint16_t val = s_cal_vals[col][row];
+            if (val == UINT16_MAX) continue; // already counted as a failed sample
+            if (capture) hhkb_cal_accumulate_baseline(col, row, val);
+            else hhkb_cal_record_peak(col, row, val);
+        }
+    }
+}
+#endif
+
 // Updates one key from its ADC sample. RAM-resident: it runs for every key of every scan.
 __attribute__((section(".RamFunc"), optimize("O2"), noinline))
 static void scan_process(scan_ctx_t *ctx, uint8_t col, uint8_t row, uint16_t val) {
@@ -203,11 +223,15 @@ static void scan_process(scan_ctx_t *ctx, uint8_t col, uint8_t row, uint16_t val
     rt_key_t *key = &s_rt_keys[col][row];
     bool is_pressed;
 
+#ifdef HHKB_CAL_DEFERRED
+    if (ctx->is_calibrating) s_cal_vals[col][row] = val;
+#endif
     if (val == UINT16_MAX) {
         // Never calibrate or update RT state from a stale ADC data register.
         if (ctx->capture) ctx->capture_failed = true;
         is_pressed = key->down;
     } else {
+#ifndef HHKB_CAL_DEFERRED
         if (ctx->is_calibrating) {
             if (ctx->capture) {
                 hhkb_cal_accumulate_baseline(col, row, val);
@@ -215,6 +239,7 @@ static void scan_process(scan_ctx_t *ctx, uint8_t col, uint8_t row, uint16_t val
                 hhkb_cal_record_peak(col, row, val);
             }
         }
+#endif
         // Calibrated endpoints stay fixed outside an explicit calibration.
         // A single runtime spike must not permanently expand the range.
         if (val <= key->base) {
@@ -324,6 +349,9 @@ bool hhkb_matrix_scan_raw(matrix_row_t current_matrix[]) {
         }
     }
     if (pending) scan_process(&ctx, pending_col, pending_row, pending_val);
+#ifdef HHKB_CAL_DEFERRED
+    if (ctx.is_calibrating) scan_calibrate_deferred(ctx.capture);
+#endif
     bool capture = ctx.capture, capture_failed = ctx.capture_failed;
     bool changed = ctx.changed;
 
