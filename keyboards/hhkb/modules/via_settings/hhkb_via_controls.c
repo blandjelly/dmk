@@ -153,6 +153,11 @@ bool via_custom_value_command_kb(uint8_t const *request, uint8_t *response) {
         return true;
     }
     if (id < 1 || id > 29) return false;
+    // Debug switches: 19 = EC matrix, 23 = VIA telemetry, 24 = rate monitor, 25 = calibration.
+    _Static_assert(DEBUG_FLAG_RATE == DEBUG_FLAG_VIA << 1 && DEBUG_FLAG_CAL == DEBUG_FLAG_VIA << 2,
+                   "IDs 23..25 map to consecutive debug flags");
+    uint8_t debug_flag = id == 19 ? DEBUG_FLAG_TOPRE
+                       : (id >= 23 && id <= 25) ? (uint8_t)(DEBUG_FLAG_VIA << (id - 23)) : 0;
     if (request[0] == 0x08) {
         if (id == 12) {
             const char *status = hhkb_settings_storage_writable() ? "Writable" : "Occupied: not saved";
@@ -165,14 +170,8 @@ bool via_custom_value_command_kb(uint8_t const *request, uint8_t *response) {
             response[31] = '\0';
         } else if (id == 29) {
             response[3] = hhkb_get_power_saving();
-        } else if (id == 19) {
-            response[3] = hhkb_get_debug_flag(DEBUG_FLAG_TOPRE);
-        } else if (id == 23) {
-            response[3] = hhkb_get_debug_flag(DEBUG_FLAG_VIA);
-        } else if (id == 24) {
-            response[3] = hhkb_get_debug_flag(DEBUG_FLAG_RATE);
-        } else if (id == 25) {
-            response[3] = hhkb_get_debug_flag(DEBUG_FLAG_CAL);
+        } else if (debug_flag) {
+            response[3] = hhkb_get_debug_flag(debug_flag);
         } else if (id == 26) {
             hhkb_get_cal_status_str((char *)&response[3], 28);
         } else if (id == 27) {
@@ -202,23 +201,13 @@ bool via_custom_value_command_kb(uint8_t const *request, uint8_t *response) {
     }
     if (request[0] == 0x07) {
         if (id == 12 || id == 26 || id == 28 || (id >= 20 && id <= 22)) return false;
+        // On/off switches accept only 0 and 1.
+        if ((id == 29 || id == 18 || debug_flag) && request[3] > 1) return false;
         if (id == 29) {
-            if (request[3] > 1) return false;
             hhkb_set_power_saving(request[3] != 0);
-        } else if (id == 19) {
-            if (request[3] > 1) return false;
-            hhkb_set_debug_flag(DEBUG_FLAG_TOPRE, request[3] != 0);
-        } else if (id == 23) {
-            if (request[3] > 1) return false;
-            hhkb_set_debug_flag(DEBUG_FLAG_VIA, request[3] != 0);
-        } else if (id == 24) {
-            if (request[3] > 1) return false;
-            hhkb_set_debug_flag(DEBUG_FLAG_RATE, request[3] != 0);
-        } else if (id == 25) {
-            if (request[3] > 1) return false;
-            hhkb_set_debug_flag(DEBUG_FLAG_CAL, request[3] != 0);
+        } else if (debug_flag) {
+            hhkb_set_debug_flag(debug_flag, request[3] != 0);
         } else if (id == 18) {
-            if (request[3] > 1) return false;
             hhkb_set_oversampling(request[3] != 0);
         } else if (id >= 14 && id <= 17) {
             hhkb_set_hold_tap_setting(id - 14, request[3]);

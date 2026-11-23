@@ -73,7 +73,8 @@ void ec_curve_rebuild(void){}
                           'static bool eeprom_write_record(', 'static bool save_settings_record(',
                           'static bool keycfg_has_settings(', 'static bool keycfg_save_needed(',
                           'static bool save_keycfg_record(', 'static void keycfg_load(',
-                          'void hhkb_calibration_save_to_eeprom(', 'void hhkb_calibration_load(',
+                          'void hhkb_calibration_save_to_eeprom(', 'static void load_rt_cfg(',
+                          'static void load_cal_ranges(', 'void hhkb_calibration_load(',
                           'static inline bool key_in_matrix(', 'uint8_t hhkb_get_key_rt_profile(',
                           'bool hhkb_set_key_rt_profile(', 'void hhkb_get_scan_cfgs(',
                           'uint8_t hhkb_get_rt_bottom_dz(', 'bool hhkb_set_rt_bottom_dz('):
