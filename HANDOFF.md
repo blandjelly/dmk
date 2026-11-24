@@ -91,9 +91,15 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
      R1 C14) and about +50 at R0 C10, repeating in a 3-line cycle: the margin to the +150 threshold
      went from about 20 to about 75 counts. Save 60/60, `record!=RAM:0`; after it at 1000 Hz `avg`
      0..-2, `min` -15..-19 (R2 C10), `max` 24-32.
-   - R0 C0 peak in that calibration was 2465 (earlier 2891, other keys 2500-2960). The old value
-     included the +120 peak-phase offset; check with the EC stream that a firm L-Shift press at
-     1000 Hz reads about 2450-2500, otherwise L-Shift reaches 100 % travel early.
+   - R0 C0 peak in that calibration was 2465 (earlier 2891, other keys 2500-2960). Checked
+     2026-11-24 with `4fd5f99` (`[REST]` prints the R0 C0 sample, also while pressed; stream off):
+     L-Shift held down reads 2394-2515 at normal 1000 Hz and 2447-2464 in the peak phase (peak
+     saved 2476); at rest 306-350 in both (base 335). So the peak phase now matches normal
+     scanning, and the old 2891 was inflated by the long OpAmp-off gap: the old L-Shift range was
+     too large. With the EC stream on, the same key reads +110 at rest (shown as "5% UP", its
+     range is the smallest) and 2600-2950 pressed, alternating between about 2650 and 2920:
+     the stream changes the OpAmp-off gap and R0 C0 is very sensitive to it. Do not judge R0 C0
+     with the stream on.
    - Right after flashing, before calibration, R0 C0 at 1000 Hz drifted from +76 to -46 within
      about 30 s while `avg` went from -3 to -7 and back: common-mode drift after power-up, not the
      filler (it only runs during calibration). Worth watching if it repeats after a replug.
