@@ -83,9 +83,20 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
      scan (`s_opamp_gap_ticks`, measured from normal 1 kHz scans: next compare minus the end of the
      scan). `hhkb_matrix_scan_raw` compiles to the same code; emulated scan 720.0 us release,
      732.1 us diagnostic, unchanged. A scan that overruns 1 ms (`[CAL]` printing) no longer costs a
-     third period. Slower scan rates no longer halve during calibration. **Not verified on
-     hardware.** Expected: R0 C0 within about +-40 of its baseline in `[REST]` during the peak
-     phase, `actual` 500 Hz, `miss` growing much less than before during calibration.
+     third period. Slower scan rates no longer halve during calibration.
+   - **`d2d362c` verified on hardware (2026-11-24)**: normal scans unchanged (`raw` 846-858 us,
+     max 882-891). Peak phase exactly 500 Hz, `miss` 718 -> 718 over the whole calibration (was
+     about +1400), USB loop 520-530. R0 C0 no longer stands out in the peak phase (once -41, never
+     the max). The peak-phase maximum is now +65..+77 at column 14 keys (R3 C14 Return, R0 C14,
+     R1 C14) and about +50 at R0 C10, repeating in a 3-line cycle: the margin to the +150 threshold
+     went from about 20 to about 75 counts. Save 60/60, `record!=RAM:0`; after it at 1000 Hz `avg`
+     0..-2, `min` -15..-19 (R2 C10), `max` 24-32.
+   - R0 C0 peak in that calibration was 2465 (earlier 2891, other keys 2500-2960). The old value
+     included the +120 peak-phase offset; check with the EC stream that a firm L-Shift press at
+     1000 Hz reads about 2450-2500, otherwise L-Shift reaches 100 % travel early.
+   - Right after flashing, before calibration, R0 C0 at 1000 Hz drifted from +76 to -46 within
+     about 30 s while `avg` went from -3 to -7 and back: common-mode drift after power-up, not the
+     filler (it only runs during calibration). Worth watching if it repeats after a replug.
    - Matrix task stack (1024 B): the emulator measures 816 B in the peak phase with `[CAL]`
      printing, plus 96 B for `matrix_task` and about 64 B for an interrupt and context save. An
      overflow resets the keyboard. Keep printf calls off this path or give the task more stack.
