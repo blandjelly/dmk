@@ -66,7 +66,26 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
      about 320), Key Tester showed stale or stuck keys, and after about 20 s the keyboard stopped
      responding until replugged. Fixed in the next commit: the peak phase scans every other
      period (500 Hz, as the old overrunning code did in effect); the 16-scan baseline capture keeps
-     1000 Hz. **Not verified on hardware.**
+     1000 Hz.
+   - **`b30c317` verified on hardware (2026-11-24)**: calibration of all 60 keys ran smoothly, peak
+     phase 482-500 Hz, USB loop 470-540 (normal 450-475), save `60/60`, `record!=RAM:0`. After it,
+     at 1000 Hz: `raw` about 853 us (max about 890), `avg` -1..-2, `min` about -35 (R2 C1, "W"),
+     `max` 25-47; neither R0 C0 nor R1 C3 stands out any more. `miss` grew about 1400 during the
+     calibration (scans over 1 ms while `[CAL]` lines print) and not after it.
+   - **New finding: at 500 Hz R0 C0 reads +90..+130 above its baseline** in every `[REST]` line of
+     the peak phase (the OpAmp is off for about 1.1 ms instead of about 0.14 ms before the scan). In
+     one calibration R0 C0 counted at exactly its threshold (`peak: 481 (base: 331)`) while the owner
+     was pressing Return; in a second one, 85 s untouched, it stayed at 0/60. So the margin is about
+     20 counts: an unpressed L-Shift can count by itself and get a range of about 150 counts.
+   - Fix (next commit, `matrix.c` only, normal scans unchanged): the peak phase uses the timer
+     divider (2) instead of an extra wait, and in the skipped period the OpAmp stays on with C57
+     held discharged. Before the next scan the OpAmp goes off for the same time as before a normal
+     scan (`s_opamp_gap_ticks`, measured from normal 1 kHz scans: next compare minus the end of the
+     scan). `hhkb_matrix_scan_raw` compiles to the same code; emulated scan 720.0 us release,
+     732.1 us diagnostic, unchanged. A scan that overruns 1 ms (`[CAL]` printing) no longer costs a
+     third period. Slower scan rates no longer halve during calibration. **Not verified on
+     hardware.** Expected: R0 C0 within about +-40 of its baseline in `[REST]` during the peak
+     phase, `actual` 500 Hz, `miss` growing much less than before during calibration.
    - Matrix task stack (1024 B): the emulator measures 816 B in the peak phase with `[CAL]`
      printing, plus 96 B for `matrix_task` and about 64 B for an interrupt and context save. An
      overflow resets the keyboard. Keep printf calls off this path or give the task more stack.
@@ -75,7 +94,8 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
 2. **"59/60 saved custom ranges" right after a 60/60 calibration** was one key, R1 C4 ("4"), resting
    at 99 counts: the save was complete (`[CAL] record!=RAM:0`), but loading and the status label
    accepted only baselines >= 100, so after power-up that key fell back to the default range
-   (baseline 800). The floor is now `HHKB_CAL_BASE_MIN` 20. Not yet confirmed after a replug.
+   (baseline 800). The floor is now `HHKB_CAL_BASE_MIN` 20. Confirmed 2026-11-24: R1 C4 captured
+   base 95, saved 60/60, and after a replug the calibration loaded and "4" works normally.
    `hhkb_calibration_finish` still accepts any captured baseline; one below 20 would be saved and
    then dropped the same way.
 3. **Calibration often misses keys** that Key Tester shows pressed (59/60, earlier 45/60 and 57/60).
@@ -88,8 +108,9 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
      baseline and can then never pass the threshold. Possible firmware fix: delay or lengthen the
      capture, or reject keys whose capture reads far above their previous baseline.
    - Ask the owner for the `[CAL] missing:` output and the Calibration Monitor log of one session.
-4. **Hybrid JIS is at its limits** with GCC 13.2: about 224 B flash and 104 B RAM free, no deferred
-   calibration. Any change touching it needs savings elsewhere.
+4. **Hybrid builds are at their flash limit** with GCC 13.2: after the OpAmp filler change 16 B free
+   on Hybrid ANSI, 56 B on Hybrid JIS (diagnostic Hybrid ANSI with GCC 14: 20 B). Hybrid JIS has
+   about 104 B RAM free and no deferred calibration. Any further change needs savings elsewhere.
 5. Not tested on hardware: Classic and JIS builds of these changes, battery (Bluetooth) mode
    after `12ee6a7`/`e5e64ee` (scan there runs at 4 MHz with interrupts enabled outside sampling).
 6. The scan budget at 1000 Hz now has about 200-250 us left on Hybrid ANSI. The EC stream and
