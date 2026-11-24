@@ -274,9 +274,10 @@ void hhkb_rest_report(void) {
         }
     }
     if (!n) min = max = 0;
-    debug_console_printf("[REST] keys=%u avg=%d min=%d@R%uC%u max=%d@R%uC%u | R0C1 raw=%u base=%u\r\n", n,
+    // R0 C0 (L-Shift) is read first after the OpAmp switches on: printed even while pressed.
+    debug_console_printf("[REST] keys=%u avg=%d min=%d@R%uC%u max=%d@R%uC%u | R0C0 raw=%u base=%u\r\n", n,
                          n ? (int)(sum / (int32_t)n) : 0, min, min_rc >> 4, min_rc & 15u, max, max_rc >> 4,
-                         max_rc & 15u, s_diag_raw[1][0], hhkb_get_cal_baseline(1, 0));
+                         max_rc & 15u, s_diag_raw[0][0], hhkb_get_cal_baseline(0, 0));
 }
 #endif
 
