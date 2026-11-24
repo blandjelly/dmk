@@ -133,6 +133,22 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
 6. The scan budget at 1000 Hz now has about 200-250 us left on Hybrid ANSI. The EC stream and
    heavy console output still push the rate below 1000 Hz; that is expected for a debug feature.
 
+## Pre-release tests of `d2d362c` (diagnostic `4fd5f99`, 2026-11-24, Hybrid ANSI, USB)
+
+All passed: cold start (no drift, `miss` flat), 3-5 min typing (1000 Hz, `q_full=0`, `work_max`
+<= 916 us), 8 keys held (`q_full=0`, `work_max` <= 946 us, USB loop 330-390 while held), scan rate
+500 Hz and back (exact), host sleep and wake (1000 Hz, readings as before). `miss` grew only
+between logs (VIA reconnects, EEPROM writes). Battery/Bluetooth not yet tested.
+
+Open observation (pre-existing, not from the calibration changes): for stretches of several
+seconds R0 C0 rests at +55..+95 (390-429, base 335) instead of -30..+20, always together with scan
+`raw` 846-849 us instead of 853-858 and `avg` 2-3 counts lower. Suspected: the USB interrupt
+drifting relative to the TIM2 scan period (USB and TIM2 clocks are not locked), and R0 C0, read
+first after the OpAmp switches on, reacting most. At 500 Hz R0 C0 rests at about +100 (longer
+OpAmp-off gap): calibrate at the scan rate in use. +95 is about 4 % of L-Shift travel, so it only
+matters with an actuation point below about 6 %. A cure is a discarded first sample in every scan
+(about 8 us per scan); the owner prefers no scan time cost for now.
+
 ## Mapping of matrix positions to keys (ANSI)
 
 Rows R0-R3, columns C0-C14, as printed by `[CAL]` and `[EC]` (from the `row,col` labels in `via.json`):
