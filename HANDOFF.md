@@ -128,8 +128,8 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
 4. **Hybrid builds are at their flash limit** with GCC 13.2: after the OpAmp filler change 16 B free
    on Hybrid ANSI, 56 B on Hybrid JIS (diagnostic Hybrid ANSI with GCC 14: 20 B). Hybrid JIS has
    about 104 B RAM free and no deferred calibration. Any further change needs savings elsewhere.
-5. Not tested on hardware: Classic and JIS builds of these changes, battery (Bluetooth) mode
-   after `12ee6a7`/`e5e64ee` (scan there runs at 4 MHz with interrupts enabled outside sampling).
+5. Not tested on hardware: Classic and JIS builds of these changes. Battery (Bluetooth) mode
+   passed on 2026-11-24 with the release build of `0329054` (see below).
 6. The scan budget at 1000 Hz now has about 200-250 us left on Hybrid ANSI. The EC stream and
    heavy console output still push the rate below 1000 Hz; that is expected for a debug feature.
 
@@ -138,7 +138,15 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
 All passed: cold start (no drift, `miss` flat), 3-5 min typing (1000 Hz, `q_full=0`, `work_max`
 <= 916 us), 8 keys held (`q_full=0`, `work_max` <= 946 us, USB loop 330-390 while held), scan rate
 500 Hz and back (exact), host sleep and wake (1000 Hz, readings as before). `miss` grew only
-between logs (VIA reconnects, EEPROM writes). Battery/Bluetooth not yet tested.
+between logs (VIA reconnects, EEPROM writes).
+
+Release build (`0329054`, code identical to `d2d362c`, flashed as
+`dmk_hhkb_hybrid_ansi_0329054.hfb` built from the owner's `HHKB800_FW_A048.hfb`), 2026-11-24:
+- USB: full calibration (every key pressed 5 times, 60/60 saved), Key Tester sweep of all keys,
+  even actuation depth, keys and L-Shift held for 30 s, Rapid Trigger checks: all correct.
+- Bluetooth (battery, another computer): typing, long holds, sleep and wake by a key, back to
+  USB on replug: all correct. This covers the battery scan path after `12ee6a7`/`e5e64ee`.
+- The release build is in daily use.
 
 Open observation (pre-existing, not from the calibration changes): for stretches of several
 seconds R0 C0 rests at +55..+95 (390-429, base 335) instead of -30..+20, always together with scan
@@ -148,6 +156,17 @@ first after the OpAmp switches on, reacting most. At 500 Hz R0 C0 rests at about
 OpAmp-off gap): calibrate at the scan rate in use. +95 is about 4 % of L-Shift travel, so it only
 matters with an actuation point below about 6 %. A cure is a discarded first sample in every scan
 (about 8 us per scan); the owner prefers no scan time cost for now.
+
+L-Shift calibration is not repeatable because of this: base 321 and 335 on diagnostic builds,
+272 and 249 on the release build (its scan rhythm differs slightly), peak 2416-2514 in some
+sessions and 2938 in another (pressed readings alternate between about 2550 and 2940). With the
+default 75 % actuation L-Shift therefore actuates at 75-88 % of its true signal range instead of
+75 %; rest noise stays at 3-6 %, far from actuation, so no false presses. The owner does not
+notice it in normal use. Next step: the owner asks the upstream author to run the diagnostic
+build on another board (`[REST]` prints the R0 C0 sample: 60 s idle, 2 min typing, L-Shift held
+5 s). If the spread is similar there, try a fixed OpAmp settle time after it switches on, before
+the first key (diagnostic builds with 15, 30 and 60 us; the scan has about 110-150 us of
+headroom at 1000 Hz), pick the shortest that makes R0 C0 stable, then recalibrate all keys.
 
 ## Mapping of matrix positions to keys (ANSI)
 
