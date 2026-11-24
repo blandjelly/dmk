@@ -147,6 +147,6 @@ port only the scan changes onto the current `dev` (on top of the `scan_pending_t
 
 I'd also add `tools/hhkb/scan_emu.py` so timing changes can be checked without hardware.
 
-Tested so far: Hybrid ANSI over USB only. Not tested: Classic, JIS, and Hybrid on battery
-(the scan runs at 4 MHz with `AUTOFF` there).
+Tested so far: Hybrid ANSI, over USB and over Bluetooth on battery (the scan runs at 4 MHz with
+`AUTOFF` there); the build with these changes is in daily use. Not tested: Classic and JIS.
 Would you accept a PR like this, and should it target `dev`?

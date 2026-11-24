@@ -75,8 +75,9 @@ time with RT on and off: about 727 µs in `scan_emu.py`, about 850 µs on my key
 **Storage:** per-key settings are in a separate 120-byte EEPROM record at `0x08081700` (version 2).
 The firmware writes it only on the first per-key change, and only if the area is empty or already
 holds this record; the main settings record is unchanged. `dev` now stores settings in compressed
-snapshots (b20e7b2), so for upstream I'd move these settings into that format instead. That needs
-your input on the snapshot layout and its free space.
+snapshots (b20e7b2), and its second snapshot uses `0x0808170C-0x080817FF`, which overlaps this record.
+For upstream I'd move the per-key settings into the snapshot format instead. That needs your input on the snapshot layout
+and its free space.
 
 **Tests** (in `tests/hhkb_classic/`): per-key points and the bottom dead zone in `test_rapid_trigger.c`,
 EEPROM round trips and the scan mapping in `test_hybrid_sleep_settings.py`, menus in `test_per_key_menus.py`.
@@ -85,9 +86,11 @@ EEPROM round trips and the scan mapping in `test_hybrid_sleep_settings.py`, menu
 
 - Tested: Hybrid ANSI over USB. Press/release sensitivity per profile, per-key points, the bottom
   dead zone and the classic hysteresis behave as configured in `[EC]` logs.
-- Not tested: Classic, JIS (the JIS tab is generated but unchecked on hardware), Hybrid on battery.
-- Hybrid JIS has the least room: with GCC 13.2 my fork has about 224 B of flash and 104 B of RAM free.
-  With GCC 15.3 on `dev` that may be different.
+- The release build is in daily use, over USB and over Bluetooth on battery.
+- Not tested: Classic, JIS (the JIS tab is generated but unchecked on hardware).
+- Flash: in my fork Hybrid builds have only tens of bytes left with GCC 13.2, and Hybrid JIS about
+  104 B of RAM. `dev` has more room (with GCC 14, Hybrid ANSI has about 2.5 KB of flash free on `dev`
+  against about 1.3 KB in my fork).
 
 ## Proposed PR
 
