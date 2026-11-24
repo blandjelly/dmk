@@ -4,7 +4,8 @@ DMK is a FreeRTOS keyboard firmware for several MCUs. This fork (blandjelly/dmk,
 works on the **HHKB Professional** port: STM32L072 application in Bank 2 (`0x08010000`, 64 KiB),
 Topre electrostatic-capacitive matrix read through an ADC, Rapid Trigger, VIA settings.
 The owner tests on a **Hybrid ANSI** board (model AHUX01). Read `HANDOFF.md` first: it holds the
-current state, open items and hardware measurements.
+current state, open items and hardware measurements. `UPSTREAM_DEV_ANALYSIS.md` compares the fork
+with upstream `dev` and plans the pull requests to it.
 
 ## Layout
 

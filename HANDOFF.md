@@ -66,7 +66,43 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
      about 320), Key Tester showed stale or stuck keys, and after about 20 s the keyboard stopped
      responding until replugged. Fixed in the next commit: the peak phase scans every other
      period (500 Hz, as the old overrunning code did in effect); the 16-scan baseline capture keeps
-     1000 Hz. **Not verified on hardware.**
+     1000 Hz.
+   - **`b30c317` verified on hardware (2026-11-24)**: calibration of all 60 keys ran smoothly, peak
+     phase 482-500 Hz, USB loop 470-540 (normal 450-475), save `60/60`, `record!=RAM:0`. After it,
+     at 1000 Hz: `raw` about 853 us (max about 890), `avg` -1..-2, `min` about -35 (R2 C1, "W"),
+     `max` 25-47; neither R0 C0 nor R1 C3 stands out any more. `miss` grew about 1400 during the
+     calibration (scans over 1 ms while `[CAL]` lines print) and not after it.
+   - **New finding: at 500 Hz R0 C0 reads +90..+130 above its baseline** in every `[REST]` line of
+     the peak phase (the OpAmp is off for about 1.1 ms instead of about 0.14 ms before the scan). In
+     one calibration R0 C0 counted at exactly its threshold (`peak: 481 (base: 331)`) while the owner
+     was pressing Return; in a second one, 85 s untouched, it stayed at 0/60. So the margin is about
+     20 counts: an unpressed L-Shift can count by itself and get a range of about 150 counts.
+   - Fix (next commit, `matrix.c` only, normal scans unchanged): the peak phase uses the timer
+     divider (2) instead of an extra wait, and in the skipped period the OpAmp stays on with C57
+     held discharged. Before the next scan the OpAmp goes off for the same time as before a normal
+     scan (`s_opamp_gap_ticks`, measured from normal 1 kHz scans: next compare minus the end of the
+     scan). `hhkb_matrix_scan_raw` compiles to the same code; emulated scan 720.0 us release,
+     732.1 us diagnostic, unchanged. A scan that overruns 1 ms (`[CAL]` printing) no longer costs a
+     third period. Slower scan rates no longer halve during calibration.
+   - **`d2d362c` verified on hardware (2026-11-24)**: normal scans unchanged (`raw` 846-858 us,
+     max 882-891). Peak phase exactly 500 Hz, `miss` 718 -> 718 over the whole calibration (was
+     about +1400), USB loop 520-530. R0 C0 no longer stands out in the peak phase (once -41, never
+     the max). The peak-phase maximum is now +65..+77 at column 14 keys (R3 C14 Return, R0 C14,
+     R1 C14) and about +50 at R0 C10, repeating in a 3-line cycle: the margin to the +150 threshold
+     went from about 20 to about 75 counts. Save 60/60, `record!=RAM:0`; after it at 1000 Hz `avg`
+     0..-2, `min` -15..-19 (R2 C10), `max` 24-32.
+   - R0 C0 peak in that calibration was 2465 (earlier 2891, other keys 2500-2960). Checked
+     2026-11-24 with `4fd5f99` (`[REST]` prints the R0 C0 sample, also while pressed; stream off):
+     L-Shift held down reads 2394-2515 at normal 1000 Hz and 2447-2464 in the peak phase (peak
+     saved 2476); at rest 306-350 in both (base 335). So the peak phase now matches normal
+     scanning, and the old 2891 was inflated by the long OpAmp-off gap: the old L-Shift range was
+     too large. With the EC stream on, the same key reads +110 at rest (shown as "5% UP", its
+     range is the smallest) and 2600-2950 pressed, alternating between about 2650 and 2920:
+     the stream changes the OpAmp-off gap and R0 C0 is very sensitive to it. Do not judge R0 C0
+     with the stream on.
+   - Right after flashing, before calibration, R0 C0 at 1000 Hz drifted from +76 to -46 within
+     about 30 s while `avg` went from -3 to -7 and back: common-mode drift after power-up, not the
+     filler (it only runs during calibration). Worth watching if it repeats after a replug.
    - Matrix task stack (1024 B): the emulator measures 816 B in the peak phase with `[CAL]`
      printing, plus 96 B for `matrix_task` and about 64 B for an interrupt and context save. An
      overflow resets the keyboard. Keep printf calls off this path or give the task more stack.
@@ -75,7 +111,8 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
 2. **"59/60 saved custom ranges" right after a 60/60 calibration** was one key, R1 C4 ("4"), resting
    at 99 counts: the save was complete (`[CAL] record!=RAM:0`), but loading and the status label
    accepted only baselines >= 100, so after power-up that key fell back to the default range
-   (baseline 800). The floor is now `HHKB_CAL_BASE_MIN` 20. Not yet confirmed after a replug.
+   (baseline 800). The floor is now `HHKB_CAL_BASE_MIN` 20. Confirmed 2026-11-24: R1 C4 captured
+   base 95, saved 60/60, and after a replug the calibration loaded and "4" works normally.
    `hhkb_calibration_finish` still accepts any captured baseline; one below 20 would be saved and
    then dropped the same way.
 3. **Calibration often misses keys** that Key Tester shows pressed (59/60, earlier 45/60 and 57/60).
@@ -88,12 +125,48 @@ or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebui
      baseline and can then never pass the threshold. Possible firmware fix: delay or lengthen the
      capture, or reject keys whose capture reads far above their previous baseline.
    - Ask the owner for the `[CAL] missing:` output and the Calibration Monitor log of one session.
-4. **Hybrid JIS is at its limits** with GCC 13.2: about 224 B flash and 104 B RAM free, no deferred
-   calibration. Any change touching it needs savings elsewhere.
-5. Not tested on hardware: Classic and JIS builds of these changes, battery (Bluetooth) mode
-   after `12ee6a7`/`e5e64ee` (scan there runs at 4 MHz with interrupts enabled outside sampling).
+4. **Hybrid builds are at their flash limit** with GCC 13.2: after the OpAmp filler change 16 B free
+   on Hybrid ANSI, 56 B on Hybrid JIS (diagnostic Hybrid ANSI with GCC 14: 20 B). Hybrid JIS has
+   about 104 B RAM free and no deferred calibration. Any further change needs savings elsewhere.
+5. Not tested on hardware: Classic and JIS builds of these changes. Battery (Bluetooth) mode
+   passed on 2026-11-24 with the release build of `0329054` (see below).
 6. The scan budget at 1000 Hz now has about 200-250 us left on Hybrid ANSI. The EC stream and
    heavy console output still push the rate below 1000 Hz; that is expected for a debug feature.
+
+## Pre-release tests of `d2d362c` (diagnostic `4fd5f99`, 2026-11-24, Hybrid ANSI, USB)
+
+All passed: cold start (no drift, `miss` flat), 3-5 min typing (1000 Hz, `q_full=0`, `work_max`
+<= 916 us), 8 keys held (`q_full=0`, `work_max` <= 946 us, USB loop 330-390 while held), scan rate
+500 Hz and back (exact), host sleep and wake (1000 Hz, readings as before). `miss` grew only
+between logs (VIA reconnects, EEPROM writes).
+
+Release build (`0329054`, code identical to `d2d362c`, flashed as
+`dmk_hhkb_hybrid_ansi_0329054.hfb` built from the owner's `HHKB800_FW_A048.hfb`), 2026-11-24:
+- USB: full calibration (every key pressed 5 times, 60/60 saved), Key Tester sweep of all keys,
+  even actuation depth, keys and L-Shift held for 30 s, Rapid Trigger checks: all correct.
+- Bluetooth (battery, another computer): typing, long holds, sleep and wake by a key, back to
+  USB on replug: all correct. This covers the battery scan path after `12ee6a7`/`e5e64ee`.
+- The release build is in daily use.
+
+Open observation (pre-existing, not from the calibration changes): for stretches of several
+seconds R0 C0 rests at +55..+95 (390-429, base 335) instead of -30..+20, always together with scan
+`raw` 846-849 us instead of 853-858 and `avg` 2-3 counts lower. Suspected: the USB interrupt
+drifting relative to the TIM2 scan period (USB and TIM2 clocks are not locked), and R0 C0, read
+first after the OpAmp switches on, reacting most. At 500 Hz R0 C0 rests at about +100 (longer
+OpAmp-off gap): calibrate at the scan rate in use. +95 is about 4 % of L-Shift travel, so it only
+matters with an actuation point below about 6 %. A cure is a discarded first sample in every scan
+(about 8 us per scan); the owner prefers no scan time cost for now.
+
+L-Shift calibration is not repeatable because of this: base 321 and 335 on diagnostic builds,
+272 and 249 on the release build (its scan rhythm differs slightly), peak 2416-2514 in some
+sessions and 2938 in another (pressed readings alternate between about 2550 and 2940). With the
+default 75 % actuation L-Shift therefore actuates at 75-88 % of its true signal range instead of
+75 %; rest noise stays at 3-6 %, far from actuation, so no false presses. The owner does not
+notice it in normal use. Next step: the owner asks the upstream author to run the diagnostic
+build on another board (`[REST]` prints the R0 C0 sample: 60 s idle, 2 min typing, L-Shift held
+5 s). If the spread is similar there, try a fixed OpAmp settle time after it switches on, before
+the first key (diagnostic builds with 15, 30 and 60 us; the scan has about 110-150 us of
+headroom at 1000 Hz), pick the shortest that makes R0 C0 stable, then recalibrate all keys.
 
 ## Mapping of matrix positions to keys (ANSI)
 
