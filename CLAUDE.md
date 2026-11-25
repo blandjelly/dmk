@@ -20,7 +20,8 @@ with upstream `dev` and plans the pull requests to it.
   - `modules/via_settings/hhkb_via_controls.c`: VIA custom controls by id.
 - `platforms/stm32l072/`: startup, linker script (`stm32l072_bank2.ld`), FreeRTOS port.
 - `tools/hhkb/`: `hhkb.html` (browser patcher/flasher), `patch_hybrid_hfb.py`, `make_hfb.py`,
-  `generate_per_key_menus.py`, `scan_emu.py` (scan timing emulator).
+  `generate_per_key_menus.py`, `scan_emu.py` (scan timing emulator), `usb_report_gaps.py`
+  (host-side gaps between keyboard reports in a Wireshark USBPcap/usbmon capture).
 - `tests/`: `run_all_tests.sh` runs C unit tests (clang), host tests for HHKB code and Python tests.
 
 ## Build
