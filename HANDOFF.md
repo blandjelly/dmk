@@ -5,6 +5,32 @@ Hardware: the owner's **HHKB Hybrid ANSI** (AHUX01), USB, VIA in Chrome. The own
 files built from the stock `HHKB800_FW_A048.hfb` plus our STM32 `.bin` (`tools/hhkb/patch_hybrid_hfb.py`
 or `tools/hhkb/hhkb.html`). Built files live in `build/` (ignored by git); rebuild them as needed.
 
+## Next session: waiting for the owner's USB capture results (2026-11-25)
+
+The owner will send host-side USB captures; verify them first.
+
+- Background: the HID Console showed `matrix=1000 Hz` and `usb_loop` about 497 Hz idle, 468-490 Hz
+  with RT on and fast typing (RT off: steady 497). `usb_loop` counts passes of the USB task
+  (2 ms fallback wait, woken by notifications), not the polling rate, which is fixed at 1000 Hz by
+  `bInterval=1`. The small drop with RT is the 2-tick wait stretched to 3 ticks by higher-priority
+  work. A large drop means USB task starvation. Docs: `keyboards/hhkb/docs/en/via-debug.md`.
+- Upstream context: in aroum/dmk#8 the author reported "~1000 Hz scan and 1000 Hz USB polling with
+  SOF sync and RT". Their SOF lock (`dev`, `keyboards/hhkb/modules/ec/sof_lock.c`) phase-locks TIM2
+  to USB SOF; their Classic ANSI logs show `lead=950` (the clamp) and `age` about 949 us, with rare
+  peaks about 2.9 ms. The owner posts our reply there (drafted in the session of 2026-11-25; no PRs
+  for now, the author has other plans for some features).
+- Test plan given to the owner (Windows, Wireshark + USBPcap, HHKB on USB, VIA closed, debug flags
+  off): four 30 s captures of 4-8 key chords and fast trills in Notepad: `rt_on_1000`, `rt_off_1000`,
+  `rt_on_500`, `rt_off_500` (`.pcapng`).
+- Analyse with `python3 tools/hhkb/usb_report_gaps.py <files>` (`--list`, `--device BUS:DEV`,
+  `--csv`). It has only been tested on synthetic captures: if a real file fails to parse, fix the
+  USBPcap/pcapng reader first.
+- What to look for: gaps inside bursts (< 3.5 ms). Mostly ~1 ms means each queued report made the
+  next frame; more ~2/~3 ms with RT on at 1000 Hz than with RT off means the USB task misses frames.
+  Windows timestamps bunch (gaps < 0.75 ms next to longer ones): compare captures, not absolute
+  numbers. At 500 Hz chords spread over 2 ms scans, so more ~2 ms there is normal.
+- Then: summarise for the owner, optionally as a follow-up comment in aroum/dmk#8.
+
 ## What was done
 
 | Commit | Change | Hardware result |
