@@ -20,6 +20,11 @@ static volatile uint16_t s_scan_period_ticks;
 static volatile uint8_t s_scan_divider;
 static uint8_t s_scan_phase;
 static uint8_t s_scan_rate_applied;
+// OpAmp-off time before a 1 kHz scan: from the end of one scan (the OpAmp is switched off a few
+// us before it returns) to the timer period that starts the next. Measured on normal scans
+// (about 140 us on Hybrid ANSI).
+static uint16_t s_opamp_gap_ticks = 140 * HHKB_SCAN_TIMER_TICKS_PER_US;
+static bool s_opamp_filler;
 
 static void update_scan_period(void) {
     static const uint16_t period_us[] = {10000, 8000, 4000, 2000, 1000, 5000, 11000};
@@ -368,6 +373,14 @@ void matrix_task(void *pvParameters) {
             NVIC_EnableIRQ(TIM2_IRQn);
         }
         uint32_t notifications = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (s_opamp_filler) {
+            // End of a skipped calibration period: OpAmp off and C57 released for the same time
+            // as before a normal scan, so the first keys read as they do at the baseline.
+            s_opamp_filler = false;
+            GPIOC->BRR = (1U << 7) | (1U << 8);
+            uint16_t off = (uint16_t)TIM2->CNT;
+            while ((uint16_t)((uint16_t)TIM2->CNT - off) < s_opamp_gap_ticks) {}
+        }
 #ifdef HHKB_SCAN_DIAGNOSTICS
         if (notifications > 1) s_matrix_scan_deadline_misses += notifications - 1;
 #else
@@ -382,6 +395,9 @@ void matrix_task(void *pvParameters) {
         previous_scan_start = scan_start;
 #endif
         hhkb_matrix_scan_raw(s_matrix_state);
+#ifdef HHKB_SCAN_1KHZ
+        uint16_t scan_end = (uint16_t)TIM2->CNT;
+#endif
 #ifdef HHKB_SCAN_DIAGNOSTICS
         uint32_t scan_us = (uint16_t)(TIM2->CNT - scan_start) / HHKB_SCAN_TIMER_TICKS_PER_US;
         s_matrix_scan_us = scan_us;
@@ -432,10 +448,23 @@ void matrix_task(void *pvParameters) {
 #else
         (void)missed;
 #endif
-        // Calibration's peak phase scans every other period. Its scans take about 990 us on Hybrid
-        // ANSI, so at 1000 Hz the USB task got 20-100 loops/s, VIA showed stale keys and the
-        // host dropped the keyboard. The 16-scan baseline capture keeps the normal period.
-        if (calibrating && !hhkb_cal_is_capturing_baseline()) ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        // Calibration's peak phase scans every other 1 ms period: its scans take about 990 us on
+        // Hybrid ANSI, and at 1000 Hz the USB task got 20-100 loops/s, VIA showed stale keys and
+        // the host dropped the keyboard. The 16-scan baseline capture keeps the normal period.
+        // In the skipped period the OpAmp stays on (C57 held discharged, as between keys): off
+        // for that whole period, it made R0 C0 read about 120 counts above its baseline, enough
+        // to count as pressed by itself.
+        if (s_scan_rate_applied == 4) {
+            bool peak_phase = calibrating && !hhkb_cal_is_capturing_baseline();
+            s_scan_divider = peak_phase ? 2 : 1;
+            if (peak_phase) {
+                GPIOC->BSRR = (1U << 7) | (1U << 8);
+                s_opamp_filler = true;
+            } else if (!calibrating && !missed) {
+                uint16_t gap = (uint16_t)(TIM2->CCR1 - scan_end);
+                if (gap < s_scan_period_ticks) s_opamp_gap_ticks = gap;
+            }
+        }
 #else
         vTaskDelay(pdMS_TO_TICKS(1));
 #endif
