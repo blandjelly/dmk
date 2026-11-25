@@ -1,9 +1,10 @@
-# HHKB: matrix scan takes longer than 1 ms, so the 1000 Hz polling rate drops to about 500 Hz
+# HHKB: matrix scan takes longer than 1 ms, so the 1000 Hz scan rate drops to about 500 Hz
 
 ## Summary
 
-On my HHKB Hybrid ANSI (AHUX01, USB) the 1000 Hz polling rate does not work, with Rapid Trigger on
-or off. One matrix scan takes longer than the 1 ms TIM2 period, so the matrix task misses every
+On my HHKB Hybrid ANSI (AHUX01, USB) the 1000 Hz matrix scan rate does not work, with Rapid Trigger on
+or off. (The USB HID polling rate itself stays at 1000 Hz, `bInterval=1`; the host just gets a
+fresh matrix state only every second poll.) One matrix scan takes longer than the 1 ms TIM2 period, so the matrix task misses every
 other tick and VIA reports `matrix=` about 500-660 Hz. This happens on the `2026.11.22` release and on
 the current `dev` branch. In my fork the scan takes about 730 µs in the emulator and about 850 µs on
 the keyboard, so it runs at 1000 Hz. I'd like to open a PR against `dev` with the changes described below.
@@ -117,7 +118,7 @@ the scan went from about 1040 µs to 715-850 µs depending on the build, and VIA
 
 ### c) Same code path just below and just above the baseline ([e5e64ee](https://github.com/blandjelly/dmk/commit/e5e64eea52c650c95a1dd96b768330afbdd32311))
 
-This is not strictly part of the polling rate problem, but it is related. The ADC reading of a key
+This is not strictly part of the scan rate problem, but it is related. The ADC reading of a key
 depends on how long the previous key's processing took. Resting noise crosses the baseline all the
 time, and the release took a shortcut at or below the baseline (`val <= key->base`) but the full
 curve path just above it (about 16 instructions more). On my keyboard one resting key alternated
