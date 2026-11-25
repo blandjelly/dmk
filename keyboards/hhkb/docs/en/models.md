@@ -1,5 +1,3 @@
-**Language:** [English](models.md) | [Русский](../ru/models.md)
-
 **Documentation:** [Install](install.md) • [Backup & restore](backup-restore.md) • [Build](build.md) • [Config](config.md) • [Models](models.md) • [VIA & Debug](via-debug.md)
 
 # HHKB models and support status

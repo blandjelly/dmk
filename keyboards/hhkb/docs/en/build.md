@@ -1,5 +1,3 @@
-**Language:** [English](build.md) | [Русский](../ru/build.md)
-
 **Documentation:** [Install](install.md) • [Backup & restore](backup-restore.md) • [Build](build.md) • [Config](config.md) • [Models](models.md) • [VIA & Debug](via-debug.md)
 
 # Build

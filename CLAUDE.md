@@ -10,7 +10,7 @@ current state, open items and hardware measurements.
 
 - `dmk_core/`: shared core (tasks, USB/TinyUSB glue, VIA/Vial, keymap, debug console).
 - `keyboards/hhkb/`: the HHKB port. `config.h` (matrix, VIA ids), `via.json` (VIA menus, partly
-  generated), `docs/en|ru/` (user guides; keep both languages in step).
+  generated), `docs/en/` (user guides, English only).
   - `modules/ec/classic_matrix.c`: the ADC matrix scan (`hhkb_matrix_scan_raw`, RAM-resident).
   - `modules/ec/matrix.c`: matrix task, TIM2-paced scan period, scan diagnostics.
   - `modules/ec/rapid_trigger.c`: per-key travel normalization and RT state machine.
@@ -74,5 +74,5 @@ Some Python tests cut code blocks out of the C sources by text (e.g. the `if (ca
 
 - Commit messages: `type(hhkb): summary` (feat, fix, perf, docs, refactor, build), body explaining
   the problem and the change, measurements where relevant.
-- User-facing docs exist in English and Russian (`keyboards/hhkb/docs/en`, `.../ru`); update both.
+- User-facing HHKB docs are English only (`keyboards/hhkb/docs/en`); the fork dropped the Russian copies.
 - Work on the branch the session names (recently `feat/hhkb-per-key-rt`).

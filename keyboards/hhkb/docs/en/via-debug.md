@@ -1,5 +1,3 @@
-**Language:** [English](via-debug.md) | [Русский](../ru/via-debug.md)
-
 ### Hybrid battery and Bluetooth LEDs
 
 In the **Bluetooth** menu, enable the orange battery display, then click **Show battery now** or assign **BT Battery** to a key. One, two, three, or four flashes indicate 0%, 5%, 15%, or above 15%, respectively. The 100% value means all three factory low-battery thresholds are inactive; it is not a precise charge measurement. Separate toggles enable an orange low-battery warning (one flash every 30 seconds at 15%; two every 15 seconds at 5% or 0%), blue blinking while pairing (2 Hz pending, 4 Hz advertising), and 1–4 blue flashes when a profile is selected or connected. These settings are saved in EEPROM.
@@ -239,6 +237,75 @@ The **HHKB Settings** → **Debug** submenu provides granular toggles for diagno
   > [!NOTE]
   > **Matrix Scan Rate (`matrix`) vs USB Task Loop (`usb_loop`):**
   >
+  > - `matrix`: how many matrix scans actually ran in the last second. At 1000 Hz a hardware timer starts a scan every 1 ms.
+  > - `usb_loop`: how many times the USB service task ran in the last second. **It is not the USB polling rate.** The host polls the keyboard endpoint every 1 ms (`bInterval=1`, 1000 Hz), whatever this counter shows.
+  > - The service task does not wait for its loop to send key reports. A new report wakes it at once, and so does the host taking the previous report, so the next queued report is loaded into the endpoint straight away. When there is no work, the task wakes every 2 ms (~500 Hz) for background jobs (VIA settings writes, the console, USB state).
+  > - Expected values: about 497 Hz while idle. Under load, for example fast typing with Rapid Trigger, it can drop to about 470–490 Hz: higher-priority work (matrix scan, key processing) sometimes delays the task past a tick, and that 2 ms wait then lasts 3 ms. This does not delay key reports. Raising `usb_loop` to 1000 Hz would only add idle loop passes; it would not change the polling rate or the latency.
+  > - To check the real polling rate, measure it on the host: a polling-rate tester that needs a continuous stream of reports, or a USB capture (Wireshark with USBPcap on Windows).
+
+- **VIA Telemetry Diag:** Diagnostic logging of incoming/outgoing VIA v3 packets.
+- **Polling Rate Monitor:** Telemetry for matrix scan and USB report frequency.
+- **Calibration Monitor:** Live tracking of sensor baseline values and capacitance drift.
+- **Factory reset (Arm settings reset & Erase all DMK settings):** Safe complete reset of all DMK custom settings, calibrations, and keymaps.
+
+### Small readings near the released position
+
+A reading around **5% travel when lightly resting a finger on a key or wiggling its keycap is normal** and does not, by itself, indicate a calibration problem. EC sensors detect small movements before the key reaches its actuation point; `UP` means the key is not logically pressed. The EC stream normally reports movement from about 5% travel, so the first visible value is not necessarily the resting value.
+
+Check with both hands completely removed from the keyboard. If the readings stop, as in the reported test, this behavior is expected; silence does not prove an exact 0% reading. Persistent elevated readings with untouched keys, unintended presses, or changing calibration values after a restart need separate investigation. Keep every key fully released while capturing the baseline.
+
+### Key Calibration Process
+
+1. Toggle on **Use custom calibration** and ensure all keys are released.
+2. Click **Start calibration** to record baseline resting capacitance levels. The baseline capture takes exactly **16 consecutive matrix scan cycles** (taking only 16 ms at a 1000 Hz scan rate; with 4x oversampling enabled, each sample hardware-averages 4 ADC conversions). The accumulated sums are divided by 16 and saved as the zero-travel reference for each individual switch.
+3. Press every key to the bottom once with normal typing force. A key counts as calibrated as soon as it moves past the first few percent of travel, and its peak is the highest reading of the session, so repeated presses add nothing and pressing much harder than usual sets the peak above a normal bottom-out (Topre keys read finger pressure once bottomed out).
+4. Click **Finish and save** to write calibration to EEPROM (only positions with valid travel range are updated).
+
+> [!TIP]
+> **Visual Tracking via Key Tester (Test Matrix):**
+> Switching between VIA tabs **does not reset** active calibration — the state remains held in MCU RAM until _Finish and save_ is clicked.
+> After clicking **Start calibration**, you can navigate directly to the **Key Tester** tab in VIA's top navigation bar and toggle on **Test Matrix**. In this mode, the visual layout lights up every physically actuated switch, giving you an immediate visual confirmation of which keys have already been bottomed out and which ones remain.
+> Once all keys are pressed, return to **Configure** → **HHKB Settings** → **Calibration** and click **Finish and save**.
+
+> [!NOTE]
+> **Status Label Updates in VIA (Curve status, Calibration status, Settings EEPROM):**
+> Dynamic status labels (such as `Curve status`, `Calibration status`, `Settings EEPROM`, and similar fields) do not continuously poll or update live in the VIA web interface. Due to the architecture of WebHID and the VIA web app, updated values for these labels are retrieved from the controller only when switching between submenus or reloading the page in the browser (F5 / Ctrl+R / Cmd+R). If you adjust curve parameters or perform key calibration, reload the VIA page or switch menus to read the updated status.
+>
+> For continuous live tracking of calibration progress and sensor activity, toggle on **Calibration Monitor** under _HHKB Settings_ → _Debug_ and open the **HID Console** tab (enabled in VIA settings via _Show HID Console tab_) to observe the textual progress bar and per-key travel peak updates.
+
+## Debugging and HID Console
+
+The **HHKB Settings** → **Debug** submenu provides granular toggles for diagnostic logging channels. By default, all diagnostic output is disabled to prevent unnecessary MCU and USB bus traffic.
+
+### 1. Enabling the HID Console Tab in VIA
+
+1. Open VIA settings by clicking the top gear icon (**Settings**).
+2. Enable **Show HID Console tab**.
+3. A new **HID Console** tab will appear in the top navigation bar.
+
+### 2. Logging Channels and Output Formats
+
+- **EC Matrix Stream:** Real-time stream of capacitive sensor samples `[EC]`.
+  - **Message Format:**
+    ```text
+    [EC] R<row> C<col> : raw=<raw> base=<base> peak=<peak> travel=<norm/10>% <DN|UP>
+    ```
+  - **Field Explanations:**
+    - `R<row> C<col>` — Matrix coordinates of the switch row and column.
+    - `raw=<raw>` — Current 12-bit raw ADC reading (0–4095).
+    - `base=<base>` — Resting capacitance baseline captured during calibration.
+    - `peak=<peak>` — Peak capacitance reading at full bottom-out.
+    - `travel=<norm/10>%` — Computed physical key travel percentage (0–100%) normalized against the PCHIP curve.
+    - `DN` / `UP` — Binary actuation state (`DN` = pressed, `UP` = released).
+  - **Quiet Threshold Filtering:** To avoid flooding the console and USB buffers, intermediate travel updates are sent only when the raw ADC signal changes by more than **±40 units**, or instantly upon any transition (`DN` $\leftrightarrow$ `UP`).
+  - **Readings shift while streaming:** The stream adds work to every key of every scan, and the sensor reading depends on that timing. On Hybrid ANSI hardware, keys at rest read about 90–100 ADC counts (3–4 % travel) higher with the stream on, so an idle key can show `travel=5%` even after a fresh calibration. Judge resting values and calibration quality with the stream off.
+
+- **Calibration Monitor:** Live step-by-step progress logging for key calibration. Outputs baseline capture completion, real-time peak updates per key (`[CAL] Key C3 R2 peak updated: 2650 -> 2890`), a visual progress bar `[====>    ] X% (N/60)`, and ready-to-save notification.
+
+- **Polling Rate Monitor:** Periodic telemetry logging actual matrix scan and USB loop frequencies (e.g. `[RATE] matrix=1000 Hz (target: 1000 Hz), usb_loop=500 Hz`).
+  > [!NOTE]
+  > **Matrix Scan Rate (`matrix`) vs USB Task Loop (`usb_loop`):**
+  >
   > - `matrix`: The actual physical hardware scan frequency of the capacitive matrix. At 1000 Hz, scanning executes strictly every 1 ms under FreeRTOS timing.
   > - `usb_loop`: The iteration frequency of the background USB service task. The task sleeps on `ulTaskNotifyTake(..., pdMS_TO_TICKS(2))` with a **2 ms timeout**. When there is no active typing or streaming debug traffic, it wakes up on the 2 ms timeout (~500 Hz) to conserve CPU cycles and power. As soon as keystrokes or data packets arrive, it wakes up instantly on task notification without latency at full 1000 Hz USB polling (`bInterval=1`). Seeing `usb_loop=500 Hz` during idle periods is expected and indicates healthy power-efficient scheduling.
 
@@ -333,7 +400,7 @@ PB9, PB8, and PB7 provide the 0%, 5%, and 15% battery thresholds. DMK samples th
 
      > [!NOTE]
      > Switching between the **Configure** tab and **HID Console** does not interrupt or reset calibration — the state remains active in MCU RAM until _Finish and save_ is clicked. Console monitoring provides uninterrupted real-time visibility without having to manually refresh the status counter in the calibration menu.
-   - **Polling Rate Monitor** — outputs periodic reports of the actual matrix scan rate and USB task frequency (e.g. `[RATE] Matrix: 1000 Hz, USB: 500 Hz`).
+   - **Polling Rate Monitor** — once per second prints the actual matrix scan rate and the USB service task loop rate (e.g. `[RATE] matrix=1000 Hz (target: 1000 Hz), usb_loop=497 Hz`). `usb_loop` is not the USB polling rate; see the note above.
    - **VIA Telemetry Diag** — prints incoming VIA/Vial requests, commands, and parameter modifications.
 
 > [!TIP]

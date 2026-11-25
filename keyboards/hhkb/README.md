@@ -1,7 +1,3 @@
-**Language / Язык:** [English](README.md) | [Русский](README_ru.md)
-
----
-
 # HHKB Classic & Hybrid DMK Firmware — Uses the Original Controller, No Hardware Mods Required
 
 Alternative firmware for HHKB Professional Classic and Hybrid keyboards. It runs directly on the original STM32L072 controller: no controller replacement, soldering, or keyboard disassembly is required.
